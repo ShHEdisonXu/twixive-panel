@@ -1,0 +1,13 @@
+services:
+  twixive-panel:
+    image: twixive-panel:latest   # 使用 NAS 上已构建好的本地镜像
+    container_name: twixive-panel
+    ports:
+      - "6523:8000"            # NAS 访问端口 → 容器 8000
+    environment:
+      TZ: Asia/Shanghai        # 适配本地时区（自动任务时间）
+      DATA_DIR: /data
+      PORT: "8000"
+    volumes:
+      - ./data:/data          # 下载文件 + SQLite 数据库持久化
+    restart: unless-stopped
