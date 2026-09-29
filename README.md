@@ -1,58 +1,104 @@
 # TwiXive Panel · 视频下载管理面板
 
-一个自托管的视频下载管理面板：**分类选择 → 勾选视频 → 一键/自动下载**，支持
-**代理**、**Docker** 部署。架构为可插拔「来源适配器」，TwiXive 作为一个适配器接入。
+自托管的视频下载管理面板：**分类选择 → 勾选视频 → 一键/自动下载**。
+FastAPI + SQLite + 原生前端，单容器部署，数据全部落在本地。
 
-> ⚠️ TwiXive 为 X/Twitter 成人视频聚合站（18+）。本工具仅做下载自动化，不绕过访问控制、
+> ⚠️ 目标站点为 X/Twitter 成人视频聚合站（18+）。本工具仅做下载自动化，不绕过访问控制、
 > 默认带礼貌限速；请仅下载你有权访问的内容，并遵守所在地区法律与站点条款。
 
 ## 功能
-- 🎛️ 深色面板：控制台 / 分类下载 / 下载任务 / 设置 四个视图
-- 🗂️ 两个来源大 tab（TwiXive / TwiVideo），分类按站点真实导航分组，勾选视频批量入队
-- 📡 分类监控：点亮分类上的 📡，出现新视频自动入队下载（按地址去重，绝不重复下）
-- ⚡ 断点续传 + 失败自动重试 N 次 + 单文件大小上限过滤
-- 🌐 代理配置：HTTP / HTTPS / SOCKS5（由地址前缀决定），抓取与下载均走代理
-- 🐳 Docker：一键 `docker compose up -d`，数据持久化到 `./data`，默认端口 **6523**
-- 🔌 可插拔来源：`app/sources/` 下新增适配器并在 `REGISTRY` 注册即可
 
-## 快速开始（Docker，推荐）
+- 🎛️ 深色面板：控制台 / 分类下载 / 下载任务 / 设置 四个视图，手机端导航移至底部
+- 🗂️ 两个来源大 Tab（TwiXive / TwiVideo），分类按站点真实导航分组
+- 📦 大批量拉取：每次加载 100~1000 条可选，按 offset 分页不错位；已下载过的自动标记「已存在」并跳过
+- 📡 分类监控：分类右侧的开关打开后，出现新视频自动入队下载（按地址去重，绝不重复下）
+- ⚡ 断点续传 + 失败自动重试（退避）+ 单文件大小上限过滤
+- 🌐 代理配置：HTTP / HTTPS / SOCKS5（由地址前缀决定），抓取与下载均走代理；设置页一键测试连通性
+- 🔥 代理熔断：代理连续失败自动全局暂停 2 分钟再探测，排队任务不会被批量烧成失败
+- 📊 控制台总览：实时统计、动态流、监控中分类、正在下载进度
+- 🚀 实时网速：后端逐块采样 + 指数平滑，悬浮窗常驻；导航栏角标显示进行中/失败数
+- 🀄 全部报错中文化，一键重试全部失败
+
+## 📸 截图
+
+### 控制台
+
+![控制台](docs/screenshot-dashboard.png)
+
+### 分类下载
+
+![分类下载](docs/screenshot-categories.png)
+
+### 下载任务
+
+![下载任务](docs/screenshot-downloads.png)
+
+### 设置
+
+![设置](docs/screenshot-settings.png)
+
+### 手机端
+
+<p align="center">
+  <img src="docs/screenshot-mobile.png" width="320" alt="手机端">
+</p>
+
+## 🚀 快速开始（Docker）
+
 ```bash
-git clone <repo> && cd twixive-panel
-docker compose up -d --build
-# 打开 http://<宿主机IP>:6523
-```
-启动后：设置页填入代理 → 回到「分类下载」选择站点与分类 → 拉取并勾选下载。
+docker pull edisonxu123/twixive-panel:1.0
 
-## 部署到 NAS（端口 6523）
-本服务已默认映射到宿主机 **6523** 端口（`docker-compose.yml` 中 `6523:8000`）。
-
-**方式 A：把整个文件夹拷到 NAS 后用 Compose（群晖 Container Manager / QNAP Container Station / 威联通 均支持）**
-1. 将 `twixive-panel/` 整目录上传到 NAS 任意共享文件夹（如 `/volume1/docker/twixive-panel`）。
-2. 进入该目录即可用（默认无口令，直接访问；compose 已改为使用本地镜像 `twixive-panel:latest`，不再重新 build）。
-3. 用 Container Manager 的「项目 / 导入 docker-compose」导入该目录，或 SSH 进 NAS 执行：
-   ```bash
-   cd /volume1/docker/twixive-panel
-   docker compose up -d
-   ```
-4. 浏览器打开 `http://<NAS局域网IP>:6523` 直接访问。
-
-**方式 B：单条 docker run（任意支持 Docker 的 NAS / 服务器）**
-```bash
-docker run -d --name twixive-panel \
+docker run -d \
+  --name twixive-panel \
   -p 6523:8000 \
+  -v /你的/下载目录:/data \
   -e TZ=Asia/Shanghai \
-  -v /volume1/docker/twixive-panel/data:/data \
   --restart unless-stopped \
-  ghcr.io/<your>/twixive-panel:latest
+  edisonxu123/twixive-panel:1.0
 ```
-> 说明：本仓库提供的是源码构建（`build: .`）。若你的 NAS 无法直接访问源码目录，
-> 可先在本机/CI 执行 `docker build -t twixive-panel .` 并推送到镜像仓库（如 Docker Hub / 群晖自带 Registry），
-> 再把上面 `build: .` 换成 `image: 你的镜像地址`。
 
-**反向代理 / HTTPS（可选）**：如需用域名 + HTTPS，在 Nginx / Caddy / 群晖「反向代理」中把
-`https://your.domain` 转发到 `http://127.0.0.1:6523` 即可；注意转发时要带上 `/static` 与 cookie。
+打开 `http://<主机IP>:6523` 即可使用，无登录口令。
+视频保存在挂载目录的 `downloads/` 下，数据库为同目录的 `app.db`。
 
-## 本地运行（开发）
+或使用 docker-compose：
+
+```yaml
+services:
+  twixive-panel:
+    image: edisonxu123/twixive-panel:1.0
+    container_name: twixive-panel
+    ports:
+      - "6523:8000"
+    volumes:
+      - ./videos:/data
+    environment:
+      - TZ=Asia/Shanghai
+    restart: unless-stopped
+```
+
+NAS（群晖 / QNAP / fnOS 等）用 Container Manager 导入上面的 compose 或直接 SSH 执行 `docker run` 均可。
+
+## 📖 使用方法
+
+1. **选站点**：顶部切换 TwiXive / TwiVideo 大 Tab
+2. **选分类**：点分组（排行 / 趋势 / 新的），再点子分类；每个子分类右侧有一个**监控开关**，打开后该分类的新视频会自动下载
+3. **拉取**：右上角选择每次加载数量（100~1000），点「重新拉取」；列表下方「加载 N 条」继续往后翻
+4. **批量下载**：勾选视频（已下载过的默认不勾并带「已存在」标记），点「下载勾选」；同一次提交内的重复地址后端也会自动跳过
+5. **看进度**：右下角悬浮窗显示实时总网速与队列概况，点它直达下载任务页；导航栏「下载任务」角标显示进行中数量（有失败时变红）
+6. **管理任务**：按状态 Tab 筛选，「监控」Tab 只看监控触发的任务；失败任务一键重试，支持断点续传
+7. **配置代理**：设置页填入代理地址，点「测试代理连通性」验证——视频 CDN 通常必须走代理才能访问
+
+### 建议配置
+
+| 配置项 | 建议值 | 说明 |
+|---|---|---|
+| 并发下载数 | 2~3 | 过高容易触发远端中断 |
+| 失败自动重试次数 | 2~3 | 配合断点续传基本免看管 |
+| 单文件大小上限(MB) | 100 | 按需；0 为不限制 |
+| 礼貌延时(秒) | 2 | 避免对站点造成压力 |
+
+## 🧱 本地运行（开发）
+
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
@@ -60,37 +106,24 @@ export DATA_DIR=./data
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-## 配置说明（设置页）
-| 项 | 说明 |
-|----|------|
-| 代理地址 | `http://127.0.0.1:7890` 或 `socks5://127.0.0.1:1080`，留空直连 |
-| 并发下载数 | 同时下载的任务数（1–10） |
-| 礼貌延时 | 每次请求间隔秒数，避免对站点造成压力 |
-| 失败自动重试次数 | 配合断点续传，失败后从已下载部分继续（0 = 不重试） |
-| 单文件大小上限(MB) | 超过则跳过不下载并标记「已跳过」，0 = 不限制 |
-| 自动下载 | 总开关 + 巡检间隔(分钟)；分类上的 📡 监控独立于总开关生效 |
-| 来源 | 在「分类下载」页顶部大 tab 切换 TwiXive / TwiVideo |
-
-## 接入 TwiXive 真实结构
-`app/sources/twixive.py` 顶部的**可配置常量**决定解析方式：
-- `AGE_COOKIE`：成年验证 cookie（按站点实际值调整）
-- `CATEGORY_LINK_SEL` / `VIDEO_CARD_SEL` / `THUMB_SEL` / `DIRECT_VIDEO_SEL`：CSS 选择器
-- `DEFAULT_CATEGORIES`：抓取失败时的兜底分类
-
-打开浏览器开发者工具，对照实际 DOM 调整上述选择器即可。解析失败不会崩溃，只会返回空列表。
-
 ## 目录结构
+
 ```
 twixive-panel/
 ├── Dockerfile / docker-compose.yml   # 容器化
 ├── requirements.txt
+├── docs/                             # 截图
 └── app/
     ├── main.py        # FastAPI 路由
     ├── db.py          # SQLite 持久化
     ├── config.py      # 代理 / session
-    ├── downloader.py  # 下载引擎（代理/并发/断点续传/大小上限）
-    ├── scheduler.py   # 跨来源巡检 + 自动入队
+    ├── downloader.py  # 下载引擎（代理/并发/断点续传/大小上限/熔断）
+    ├── scheduler.py   # 跨来源巡检 + 监控自动入队
     ├── errors.py      # 报错中文化
     ├── sources/       # 来源适配器（twixive / twivideo）
     └── static/        # 前端面板 (index.html/css/js)
 ```
+
+## License
+
+MIT
