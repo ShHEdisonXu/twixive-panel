@@ -604,8 +604,25 @@ const LIB_SORTS = [['time','时间 ↓'],['size','大小 ↓'],['name','名称 �
 const LIB_SPEED = 3;        // 长按倍速（抖音同款 3×）
 const LIB_SEEK_RATIO = 0.6; // 横向划过整屏 ≈ 快进总时长的 60%
 let libObs = null;
-let libPinch = null;
 let libMouse = null;        // 桌面端「按住倍速 / 横向拖动快进」的当前会话
+
+// 统一线性图标（stroke 风格，颜色跟随 currentColor；实心状态由 CSS 控制 fill）
+const svgIc = (d, opt='') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" `
+  + `stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" ${opt}>${d}</svg>`;
+const ICON = {
+  heart:  svgIc('<path d="M12 20.6C6.9 17.2 3.4 13.9 3.4 9.8A4.6 4.6 0 0 1 12 7a4.6 4.6 0 0 1 8.6 2.8c0 4.1-3.5 7.4-8.6 10.8Z"/>'),
+  share:  svgIc('<path d="M4 13v5.5A2.5 2.5 0 0 0 6.5 21h11a2.5 2.5 0 0 0 2.5-2.5V13"/><path d="M12 3.5V15"/><path d="M7.5 8 12 3.5 16.5 8"/>'),
+  sound:  svgIc('<path d="M11 5 6.5 9H3.5v6h3L11 19V5Z"/><path d="M15.2 9.2a4 4 0 0 1 0 5.6"/><path d="M17.9 6.6a7.6 7.6 0 0 1 0 10.8"/>'),
+  mute:   svgIc('<path d="M11 5 6.5 9H3.5v6h3L11 19V5Z"/><path d="m15.5 9.5 5 5"/><path d="m20.5 9.5-5 5"/>'),
+  open:   svgIc('<path d="M14 4h6v6"/><path d="M20 4l-8 8"/><path d="M18 14.5V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3.5"/>'),
+  trash:  svgIc('<path d="M4 7h16"/><path d="M9.5 7V5.4A1.4 1.4 0 0 1 10.9 4h2.2a1.4 1.4 0 0 1 1.4 1.4V7"/><path d="M6.5 7l.9 12.1A2 2 0 0 0 9.4 21h5.2a2 2 0 0 0 2-1.9L17.5 7"/><path d="M10.5 11v6M13.5 11v6"/>'),
+  sort:   svgIc('<path d="M7 20V4"/><path d="M3.5 16.5 7 20l3.5-3.5"/><path d="M17 4v16"/><path d="M13.5 7.5 17 4l3.5 3.5"/>'),
+  back:   svgIc('<path d="M15 4.5 7.5 12l7.5 7.5"/>', 'stroke-width="2.4"'),
+  grid:   svgIc('<rect x="3.5" y="3.5" width="7" height="7" rx="1.8"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.8"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.8"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.8"/>', 'stroke-width="1.7"'),
+  play:   svgIc('<path d="M7 4.8v14.4L19 12 7 4.8Z" fill="currentColor" stroke-width="1.2"/>'),
+  seekL:  svgIc('<path d="M11 6 4.5 12 11 18"/><path d="M20 6l-6.5 6L20 18"/>', 'stroke-width="2.1"'),
+  seekR:  svgIc('<path d="M13 6l6.5 6L13 18"/><path d="M4 6l6.5 6L4 18"/>', 'stroke-width="2.1"'),
+};
 
 // 桌面端手势：按住不动 = 倍速，横向拖动 = 快进（纵向留给滚动切换）
 window.addEventListener('mousemove', e=>{
@@ -698,21 +715,24 @@ function libItemHTML(it){
   const dur = it.duration ? fmtDur(it.duration) : '';
   return `<video src="/api/media/stream?path=${encodeURIComponent(it.path)}"
       preload="none" playsinline webkit-playsinline loop></video>
-    <div class="lib-hint">▶</div>
-    <div class="lib-burst">♥</div>
+    <div class="lib-hint">${ICON.play}</div>
+    <div class="lib-burst">${ICON.heart}</div>
     <div class="lib-seek">
-      <span class="lsk-arrow lsk-back">⏪</span>
+      <span class="lsk-arrow lsk-back">${ICON.seekL}</span>
       <span class="lsk-t"><b>00:00</b> / 00:00</span>
-      <span class="lsk-arrow lsk-fwd">⏩</span>
+      <span class="lsk-arrow lsk-fwd">${ICON.seekR}</span>
     </div>
     <div class="lib-speed"><b>${LIB_SPEED}×</b> 倍速播放中</div>
     <div class="lib-side">
       <div class="ls-avatar" title="${esc(it.cat_label||'未分类')}">${esc(avatar)}</div>
-      <button class="lsb star${it.star?' on':''}" data-act="star" title="收藏（双击画面也可）"><span class="ls-ic">♥</span><span class="ls-n">收藏</span></button>
-      <button class="lsb" data-act="share" title="复制视频地址"><span class="ls-ic">⤴</span><span class="ls-n">分享</span></button>
-      <button class="lsb" data-act="mute" title="静音 / 取消静音"><span class="ls-ic">🔊</span><span class="ls-n">静音</span></button>
-      <button class="lsb" data-act="open" title="新窗口打开"><span class="ls-ic">⤓</span><span class="ls-n">打开</span></button>
-      <button class="lsb del" data-act="del" title="删除文件"><span class="ls-ic">⋯</span><span class="ls-n">删除</span></button>
+      <button class="lsb star${it.star?' on':''}" data-act="star" title="收藏（双击画面也可）"><span class="ls-ic">${ICON.heart}</span><span class="ls-n">收藏</span></button>
+      <button class="lsb" data-act="share" title="复制视频地址"><span class="ls-ic">${ICON.share}</span><span class="ls-n">分享</span></button>
+      <button class="lsb" data-act="mute" title="静音 / 取消静音">
+        <span class="ls-ic"><span class="ic-sound">${ICON.sound}</span><span class="ic-mute">${ICON.mute}</span></span>
+        <span class="ls-n">静音</span>
+      </button>
+      <button class="lsb" data-act="open" title="新窗口打开"><span class="ls-ic">${ICON.open}</span><span class="ls-n">打开</span></button>
+      <button class="lsb del" data-act="del" title="删除文件"><span class="ls-ic">${ICON.trash}</span><span class="ls-n">删除</span></button>
     </div>
     <div class="lib-meta">
       <div class="lm-title">${esc(it.title)}${it.url?` <a class="lm-src" href="${esc(it.url)}" target="_blank" rel="noopener" title="打开来源页面">来源 ↗</a>`:''}</div>
@@ -972,34 +992,16 @@ function setLibMode(mode, silent){
   if(btn){
     btn.classList.toggle('on', L.mode === 'grid');
     btn.title = L.mode === 'grid' ? '当前：网格视图（点击回到沉浸播放）' : '当前：沉浸播放（点击切换网格）';
+    btn.setAttribute('aria-pressed', L.mode === 'grid' ? 'true' : 'false');
   }
   hideLibTip();
   if(L.mode === 'grid'){
     stopLibrary();                       // 网格里不自动播放，省带宽
-    if(!silent) toast('网格视图 · 点一条进入全屏，双指张开回沉浸播放');
+    if(!silent) toast('网格视图 · 点一条进入全屏');
   } else {
     setupLibObserver();
-    if(!silent) toast('沉浸播放 · 双指捏合切换网格');
+    if(!silent) toast('沉浸播放 · 上下滑动切换');
   }
-}
-
-// 双指缩放切视图：捏合 → 网格（一行三个），张开 → 沉浸单条
-const pinchDist = ts => {
-  const dx = ts[0].clientX - ts[1].clientX, dy = ts[0].clientY - ts[1].clientY;
-  return Math.hypot(dx, dy) || 1;
-};
-function setupLibPinch(){
-  const wrap = $('.lib-wrap'); if(!wrap) return;
-  wrap.addEventListener('touchstart', e=>{
-    libPinch = (e.touches.length === 2) ? {d: pinchDist(e.touches)} : null;
-  }, {passive:true});
-  wrap.addEventListener('touchmove', e=>{
-    if(e.touches.length !== 2 || !libPinch || !libPinch.d) return;
-    const r = pinchDist(e.touches) / libPinch.d;
-    if(r < 0.75){ libPinch = null; if(state.lib.mode !== 'grid') setLibMode('grid'); }
-    else if(r > 1.35){ libPinch = null; if(state.lib.mode !== 'feed') setLibMode('feed'); }
-  }, {passive:true});
-  wrap.addEventListener('touchend', e=>{ if(e.touches.length < 2) libPinch = null; }, {passive:true});
 }
 
 // 进度落库：离结尾 15 秒内视为看完，归零下次从头播
@@ -1047,9 +1049,8 @@ function applyLibMuteUI(){
   libItems().forEach(el=>{
     const b = el.querySelector('.lsb[data-act="mute"]');
     if(b){
-      const ic = b.querySelector('.ls-ic'); if(ic) ic.textContent = m ? '🔇' : '🔊';
       const lb = b.querySelector('.ls-n'); if(lb) lb.textContent = m ? '已静音' : '静音';
-      b.classList.toggle('on', m);
+      b.classList.toggle('on', m);   // 图标由 CSS 按 .on 切换 sound / mute 两套 svg
     }
   });
 }
@@ -1100,7 +1101,7 @@ function libScrollTo(i){
 function renderLibCats(){
   const box = $('#libCats'); const L = state.lib;
   const chips = [{name:'', label:'全部', count:L.all, main:true},
-                 {name:'__star__', label:'♥ 收藏', count:L.starCount, main:true}]
+                 {name:'__star__', label:'收藏', count:L.starCount, main:true}]
     .concat(L.cats.map(c=>({name:c.name, label:c.label, count:c.count, main:false})));
   box.innerHTML = chips.map(c=>{
     const active = c.name === '__star__' ? L.starOnly : (!L.starOnly && L.cat === c.name);
@@ -1129,7 +1130,6 @@ function updateLibEmpty(){
 
 $('#libBack').onclick = ()=> $('.nav[data-view="dashboard"]').click();
 $('#libGrid').onclick = ()=> setLibMode(state.lib.mode === 'grid' ? 'feed' : 'grid');
-setupLibPinch();
 setLibMode(state.lib.mode, true);   // 让按钮 / 容器类名与初始模式一致（初始化时不弹提示）
 $('#libSort').onclick = ()=>{
   const i = LIB_SORTS.findIndex(s=>s[0] === state.lib.sort);

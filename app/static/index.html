@@ -87,14 +87,23 @@
     <section class="view hidden" id="view-library">
       <div class="lib-wrap">
         <div class="lib-top">
-          <button class="lib-btn" id="libBack" title="返回控制台">
-            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M15 5l-7 7 7 7"/></svg>
+          <button class="lib-btn ibtn" id="libBack" title="返回控制台" aria-label="返回控制台">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"
+                 stroke-linecap="round" stroke-linejoin="round"><path d="M15 4.5 7.5 12l7.5 7.5"/></svg>
           </button>
           <div class="lib-cats" id="libCats"></div>
-          <input class="lib-search" id="libSearch" placeholder="搜索标题…" />
-          <button class="lib-btn" id="libSort" title="切换排序：时间 / 大小 / 名称">⇅</button>
-          <button class="lib-btn" id="libGrid" title="切换视图：沉浸播放 / 网格（双指缩放也可）">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+          <div class="lib-search-wrap">
+            <span class="ls-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg></span>
+            <input class="lib-search" id="libSearch" placeholder="搜索" />
+          </div>
+          <button class="lib-btn ibtn" id="libSort" title="切换排序：时间 / 大小 / 名称" aria-label="切换排序">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
+                 stroke-linecap="round" stroke-linejoin="round"><path d="M7 20V4"/><path d="M3.5 16.5 7 20l3.5-3.5"/><path d="M17 4v16"/><path d="M13.5 7.5 17 4l3.5 3.5"/></svg>
+          </button>
+          <button class="lib-btn ibtn" id="libGrid" title="切换视图：沉浸播放 / 网格" aria-label="切换视图">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+                 stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="7" height="7" rx="1.8"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.8"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.8"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.8"/></svg>
           </button>
         </div>
         <div class="lib-tip" id="libTip" hidden></div>
