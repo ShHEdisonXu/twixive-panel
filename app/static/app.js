@@ -52,7 +52,6 @@ let state = {
     cat: '', starOnly: false, q: '', sort: 'time',
     cats: [], starCount: 0, index: 0,
     // 'feed' 沉浸式单条（抖音式） / 'grid' 一行三个的网格
-    mode: (localStorage.getItem('twixive.libMode') === 'grid') ? 'grid' : 'feed',
     mute: localStorage.getItem('twixive.libMute') === '1'
   }
 };
@@ -602,7 +601,8 @@ function renderDashboard(tasks){
 const LIB_PAGE = 40;
 const LIB_SORTS = [['time','时间 ↓'],['size','大小 ↓'],['name','名称 ↑']];
 const LIB_SPEED = 3;        // 长按倍速（抖音同款 3×）
-const LIB_SEEK_RATIO = 0.6; // 横向划过整屏 ≈ 快进总时长的 60%
+const LIB_SEEK_RATIO = 0.6; // 画面上横向划过整屏 ≈ 快进总时长的 60%
+const LIB_PROG_RATIO = 1;   // 进度条上横向拖过整条 ≈ 走完整段视频（相对位移，不跟手指绝对位置）
 let libObs = null;
 let libMouse = null;        // 桌面端「按住倍速 / 横向拖动快进」的当前会话
 
@@ -617,8 +617,6 @@ const ICON = {
   open:   svgIc('<path d="M14 4h6v6"/><path d="M20 4l-8 8"/><path d="M18 14.5V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3.5"/>'),
   trash:  svgIc('<path d="M4 7h16"/><path d="M9.5 7V5.4A1.4 1.4 0 0 1 10.9 4h2.2a1.4 1.4 0 0 1 1.4 1.4V7"/><path d="M6.5 7l.9 12.1A2 2 0 0 0 9.4 21h5.2a2 2 0 0 0 2-1.9L17.5 7"/><path d="M10.5 11v6M13.5 11v6"/>'),
   sort:   svgIc('<path d="M7 20V4"/><path d="M3.5 16.5 7 20l3.5-3.5"/><path d="M17 4v16"/><path d="M13.5 7.5 17 4l3.5 3.5"/>'),
-  back:   svgIc('<path d="M15 4.5 7.5 12l7.5 7.5"/>', 'stroke-width="2.4"'),
-  grid:   svgIc('<rect x="3.5" y="3.5" width="7" height="7" rx="1.8"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.8"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.8"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.8"/>', 'stroke-width="1.7"'),
   play:   svgIc('<path d="M7 4.8v14.4L19 12 7 4.8Z" fill="currentColor" stroke-width="1.2"/>'),
   seekL:  svgIc('<path d="M11 6 4.5 12 11 18"/><path d="M20 6l-6.5 6L20 18"/>', 'stroke-width="2.1"'),
   seekR:  svgIc('<path d="M13 6l6.5 6L13 18"/><path d="M4 6l6.5 6L4 18"/>', 'stroke-width="2.1"'),
@@ -689,10 +687,9 @@ async function loadLibrary(reset){
 function renderLibFeed(){
   const feed = $('#libFeed');
   feed.innerHTML = '';
-  feed.classList.toggle('grid', state.lib.mode === 'grid');
   state.lib.items.forEach((it,i)=> feed.appendChild(makeLibItem(it,i)));
   applyLibMuteUI();
-  if(state.lib.mode === 'grid') stopLibrary(); else setupLibObserver();
+  setupLibObserver();
   state.lib.index = 0;
 }
 
@@ -755,31 +752,56 @@ function bindLibItem(el, v){
   let lastSave = 0;
   let clickTimer = null;
   const itemOf = () => state.lib.items[+el.dataset.i];
-  // ---- 底部进度条：拖动/点击都可调进度（抖音式：拖动时变粗并显示时间气泡）----
+  // ---- 底部进度条：抖音式——按下只是「抓住」，进度按手指左右位移增减，不会一按就跳 ----
   const prog = el.querySelector('.lib-prog');
-  let progDrag = false;
-  const progSeek = clientX=>{
-    if(!v.duration) return;
-    const r = prog.getBoundingClientRect();
-    const p = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
-    try{ v.currentTime = p * v.duration; }catch(e){}
-    paintLibProg(el, v);   // 拖动时 .lib-prog.drag 会把时间气泡显出来
+  let progDrag = false, progX0 = 0, progFrom = 0, progMoved = false;
+  let progWasPlaying = false, progRaf = 0, progTarget = 0, progTipT = null;
+  const applyProg = ()=>{          // rAF 节流：一次拖动只触发必要次数的 seek
+    progRaf = 0;
+    try{ v.currentTime = progTarget; }catch(e){}
+    paintLibProg(el, v);
   };
   const progDown = e=>{
-    progDrag = true; prog.classList.add('drag');
+    progDrag = true; progMoved = false;
+    progX0 = e.clientX; progFrom = v.currentTime || 0; progTarget = progFrom;
+    clearTimeout(progTipT);
+    prog.classList.add('drag');
+    progWasPlaying = !v.paused;
+    if(progWasPlaying) v.pause();        // 拖动时画面定格，跟抖音一致
+    paintLibProg(el, v);
     if(e.pointerId != null && prog.setPointerCapture){ try{ prog.setPointerCapture(e.pointerId); }catch(_){} }
-    progSeek(e.clientX);
   };
-  const progMove = e=>{ if(progDrag){ e.preventDefault(); progSeek(e.clientX); } };
+  const progMove = e=>{
+    if(!progDrag || !v.duration) return;
+    e.preventDefault();
+    const dx = e.clientX - progX0;
+    if(!progMoved && Math.abs(dx) < 5) return;   // 轻微抖动不算拖动
+    progMoved = true;
+    const w = prog.getBoundingClientRect().width || 1;
+    const delta = dx / w * v.duration * LIB_PROG_RATIO;
+    progTarget = Math.max(0, Math.min(v.duration, progFrom + delta));
+    if(!progRaf) progRaf = requestAnimationFrame(applyProg);
+  };
   const progUp = ()=>{
     if(!progDrag) return;
-    progDrag = false; prog.classList.remove('drag');
-    hideLibTip(); saveLibProgress(el);
+    progDrag = false;
+    if(progRaf){ cancelAnimationFrame(progRaf); progRaf = 0; }
+    if(progMoved){
+      try{ v.currentTime = progTarget; }catch(e){}
+      paintLibProg(el, v);
+      saveLibProgress(el);
+      prog.classList.remove('drag');
+      if(progWasPlaying) v.play().catch(()=> el.classList.add('paused'));
+    } else {
+      // 只是点了一下：不跳转，只把时间气泡显示片刻（避免误触把进度跳飞）
+      paintLibProg(el, v);
+      progTipT = setTimeout(()=> prog.classList.remove('drag'), 900);
+      if(progWasPlaying) v.play().catch(()=> el.classList.add('paused'));
+    }
   };
   prog.addEventListener('pointerdown', e=>{
     if(progDrag) return;
     if(e.target.closest('.lsb')) return;
-    if(state.lib.mode === 'grid'){ openLibItem(el); return; }
     progDown(e);
   });
   prog.addEventListener('pointermove', progMove);
@@ -891,11 +913,6 @@ function bindLibItem(el, v){
       if(v.paused) v.play().catch(()=>{}); else v.pause();
     }, 240);
   });
-  // 网格模式下整块就是「点开这条」
-  el.addEventListener('click', e=>{
-    if(state.lib.mode !== 'grid') return;
-    e.preventDefault(); e.stopPropagation(); openLibItem(el);
-  }, true);
   el.querySelectorAll('.lsb').forEach(b=> b.addEventListener('click', e=>{
     e.stopPropagation();
     const act = b.dataset.act;
@@ -941,13 +958,6 @@ function libOpen(el){
   window.open(it.url || ('/api/media/stream?path=' + encodeURIComponent(it.path)), '_blank');
 }
 
-// 网格模式下点一条 → 回到沉浸式并定位到它
-function openLibItem(el){
-  const i = +el.dataset.i;
-  setLibMode('feed');
-  requestAnimationFrame(()=> libScrollTo(i));
-}
-
 // 进入视口的自动播放 / 离开即停：一次只播一个，滑动切换才跟手
 function setupLibObserver(){
   if(libObs) libObs.disconnect();
@@ -957,7 +967,6 @@ function setupLibObserver(){
       const el = en.target;
       const v = el.querySelector('video');
       if(!v) return;
-      if(state.lib.mode === 'grid'){ if(!v.paused) v.pause(); return; }
       if(en.isIntersecting && en.intersectionRatio >= 0.6){
         state.lib.index = +el.dataset.i;
         v.muted = state.lib.mute;
@@ -977,31 +986,6 @@ function stopLibrary(){
     if(v && !v.paused) v.pause();
   });
   if(libObs){ libObs.disconnect(); libObs = null; }
-}
-
-// ---- 视图模式：feed（沉浸单条）/ grid（一行三个）----
-function setLibMode(mode, silent){
-  const L = state.lib;
-  L.mode = (mode === 'grid') ? 'grid' : 'feed';
-  localStorage.setItem('twixive.libMode', L.mode);
-  const feed = $('#libFeed');
-  const wrap = $('.lib-wrap');
-  if(feed) feed.classList.toggle('grid', L.mode === 'grid');
-  if(wrap) wrap.classList.toggle('grid', L.mode === 'grid');
-  const btn = $('#libGrid');
-  if(btn){
-    btn.classList.toggle('on', L.mode === 'grid');
-    btn.title = L.mode === 'grid' ? '当前：网格视图（点击回到沉浸播放）' : '当前：沉浸播放（点击切换网格）';
-    btn.setAttribute('aria-pressed', L.mode === 'grid' ? 'true' : 'false');
-  }
-  hideLibTip();
-  if(L.mode === 'grid'){
-    stopLibrary();                       // 网格里不自动播放，省带宽
-    if(!silent) toast('网格视图 · 点一条进入全屏');
-  } else {
-    setupLibObserver();
-    if(!silent) toast('沉浸播放 · 上下滑动切换');
-  }
 }
 
 // 进度落库：离结尾 15 秒内视为看完，归零下次从头播
@@ -1129,8 +1113,8 @@ function updateLibEmpty(){
 }
 
 $('#libBack').onclick = ()=> $('.nav[data-view="dashboard"]').click();
-$('#libGrid').onclick = ()=> setLibMode(state.lib.mode === 'grid' ? 'feed' : 'grid');
-setLibMode(state.lib.mode, true);   // 让按钮 / 容器类名与初始模式一致（初始化时不弹提示）
+localStorage.removeItem('twixive.libMode');   // 网格视图已移除，清掉旧的模式记录
+setupLibObserver();
 $('#libSort').onclick = ()=>{
   const i = LIB_SORTS.findIndex(s=>s[0] === state.lib.sort);
   const nx = LIB_SORTS[(i+1) % LIB_SORTS.length];
@@ -1167,8 +1151,6 @@ document.addEventListener('keydown', e=>{
       clearTimeout(window.__libTipT);
       window.__libTipT = setTimeout(hideLibTip, 900);
     }
-  } else if(e.key === 'g'){
-    setLibMode(state.lib.mode === 'grid' ? 'feed' : 'grid');
   } else if(e.key === ' '){
     e.preventDefault();
     const el = libItems()[state.lib.index];
