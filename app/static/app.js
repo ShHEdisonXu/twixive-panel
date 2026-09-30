@@ -513,21 +513,33 @@ function renderDashboard(tasks){
   const c={pending:0,downloading:0,done:0,error:0,skipped:0};
   tasks.forEach(t=>{ if(c[t.status]!=null)c[t.status]++; });
   const mon = state.monitors.length;
-  // 存储占用（后端扫盘统计，30s 缓存）
+  // 下载总量（后端扫盘统计真实文件大小，30s 缓存）
   const sto = state.storage || {};
   const disk = sto.disk || {};
   const storeTxt = (sto.bytes!=null) ? fmtGB(sto.bytes) : '—';
-  const storeSub = (sto.bytes!=null)
-    ? `${sto.files||0} 个文件` + (disk.free!=null? ` · 剩余 ${fmtGB(disk.free)}` : '')
-    : '读取中…';
+  let storeSub = '读取中…';
+  if(sto.bytes!=null){
+    storeSub = `${sto.files||0} 个文件`;
+    // 扫盘实际大小与「库里已完成任务之和」有出入时，把记录值一并显示，便于对照
+    const trk = sto.tracked||0;
+    if(trk>0 && Math.abs(sto.bytes-trk) > Math.max(trk*0.02, 104857600))
+      storeSub += ` · 记录 ${fmtGB(trk)}`;
+  }
+  const storeTitle = (()=>{
+    if(sto.bytes==null) return '正在统计下载目录…';
+    let s = `下载目录 ${sto.path||''}：实际 ${fmtGB(sto.bytes)}（${sto.files||0} 个文件）`;
+    if(sto.tracked) s += `；面板记录 ${fmtGB(sto.tracked)}，差额多为未入库的历史文件`;
+    if(disk.total!=null) s += `；磁盘共 ${fmtGB(disk.total)}，剩余 ${fmtGB(disk.free)}`;
+    return s;
+  })();
   $('#stats').innerHTML=`
     <div class="stat s1"><div class="ic">⏳</div><div class="n">${c.pending}</div><div class="l">等待中</div></div>
     <div class="stat s2"><div class="ic">⬇</div><div class="n">${c.downloading}</div><div class="l">下载中</div></div>
     <div class="stat s3"><div class="ic">✅</div><div class="n">${c.done}</div><div class="l">已完成</div></div>
     <div class="stat s4"><div class="ic">⚠️</div><div class="n">${c.error}</div><div class="l">失败</div></div>
     <div class="stat s5"><div class="ic">📡</div><div class="n">${mon}</div><div class="l">监控中分类</div></div>
-    <div class="stat s6" title="下载目录 ${esc(sto.path||'')} 的真实磁盘占用${disk.total!=null?(' · 磁盘共 '+fmtGB(disk.total)):''}">
-      <div class="ic">💾</div><div class="n">${storeTxt}</div><div class="l">总占用 · ${storeSub}</div></div>`;
+    <div class="stat s6" title="${esc(storeTitle)}">
+      <div class="ic">💾</div><div class="n">${storeTxt}</div><div class="l">下载总量 · ${storeSub}</div></div>`;
   // 实时动态
   const feed=tasks.slice(0,12);
   $('#feedCount').textContent = feed.length+' 条';
