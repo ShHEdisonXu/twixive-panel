@@ -31,12 +31,12 @@ DEFAULT_SETTINGS = {
     "source": "twixive",        # 当前启用的来源适配器 key
     "retry_times": 2,           # 下载失败自动重试次数（0=不重试），配合断点续传
     "max_size_mb": 0,           # 单文件大小上限(MB)，0=不限制；超过则跳过不下载
-    "max_duration_min": 0,      # 单文件时长上限(分钟)，0=不限制；超过则下载后丢弃不保留
     "page_size": 100,           # 分类页每次拉取/加载多少条（100~1000）
 }
 
 # 已废弃的设置项（历史库里可能残留，启动时清理）
-DEPRECATED_SETTINGS = ("proxy_type", "age_gate_accepted", "auto_categories")
+DEPRECATED_SETTINGS = ("proxy_type", "age_gate_accepted", "auto_categories",
+                       "max_duration_min")
 
 
 def _now():

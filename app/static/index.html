@@ -197,10 +197,7 @@
           <label class="fld">单文件大小上限(MB，0 = 不限制)
             <input id="max_size_mb" type="number" min="0" step="10" value="0" />
           </label>
-          <label class="fld">单文件时长上限(分钟，0 = 不限制)
-            <input id="max_duration_min" type="number" min="0" step="1" value="0" />
-          </label>
-          <p class="hint">重试会<b>断点续传</b>（从已下载部分继续，不会从头重下）。超过大小上限或时长上限的视频会被<b>跳过</b>并标记为「已跳过」，不会重复尝试。时长上限会在视频下完后探测，超长的会丢弃（仍会先把整段下载完）。</p>
+          <p class="hint">重试会<b>断点续传</b>（从已下载部分继续，不会从头重下）。超过大小上限的视频会被<b>跳过</b>并标记为「已跳过」，不会重复尝试。</p>
           <label class="fld">下载目录(容器内)
             <input id="download_path" readonly />
           </label>

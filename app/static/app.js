@@ -136,7 +136,6 @@ function fillSettings(){
   const pe=$('#proxy_enabled'); if(pe) pe.checked = s.proxy_enabled!==false;
   $('#concurrent').value=s.concurrent??3; $('#rate_delay').value=s.rate_delay??2;
   $('#retry_times').value=s.retry_times??2; $('#max_size_mb').value=s.max_size_mb??0;
-  $('#max_duration_min').value=s.max_duration_min??0;
   $('#download_path').value=s.download_path||'';
   $('#auto_enabled').checked=!!s.auto_enabled; $('#auto_interval').value=s.auto_interval??60;
   updateProxyChip();
@@ -1273,7 +1272,6 @@ $('#btnSaveSettings').onclick=async()=>{
     proxy_enabled:$('#proxy_enabled').checked,
     concurrent:+$('#concurrent').value||1, rate_delay:+$('#rate_delay').value||0,
     retry_times:+$('#retry_times').value||0, max_size_mb:+$('#max_size_mb').value||0,
-    max_duration_min:+$('#max_duration_min').value||0,
     auto_enabled:$('#auto_enabled').checked, auto_interval:+$('#auto_interval').value||60
   };
   state.settings=await api('/settings',{method:'POST',body:JSON.stringify(patch)});
