@@ -12,6 +12,13 @@ const fmtGB = b => {
   return fmtSize(b);
 };
 const fmtSpeed = b => !b ? '0 KB/s' : b>=1048576 ? (b/1048576).toFixed(2)+' MB/s' : (b/1024).toFixed(0)+' KB/s';
+// 秒 → mm:ss / h:mm:ss（视频库进度显示）
+const fmtDur = s => {
+  s = Math.max(0, Math.round(s||0));
+  const h = Math.floor(s/3600), m = Math.floor(s%3600/60), ss = s%60;
+  const p = n => String(n).padStart(2,'0');
+  return h ? (h+':'+p(m)+':'+p(ss)) : (m+':'+p(ss));
+};
 const esc = s => (s||'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 // 触发下载时间：今天只显示时分，跨天显示 月-日 时:分
 const fmtTime = iso => {
@@ -38,7 +45,14 @@ let state = {
   tasks: [], taskFilter:'all',
   settings: {}, monitors: [], storage: {},
   purge: localStorage.getItem(PURGE_KEY) !== '0',
-  knownUrls: new Set()   // 已存在/已入队过的视频地址，用于自动跳过重复
+  knownUrls: new Set(),   // 已存在/已入队过的视频地址，用于自动跳过重复
+  // 视频库（沉浸播放）：筛选条件、已加载条目、收藏/静音状态
+  lib: {
+    items: [], total: 0, all: 0, page: 1, has_more: false, loading: false,
+    cat: '', starOnly: false, q: '', sort: 'time',
+    cats: [], starCount: 0, index: 0,
+    mute: localStorage.getItem('twixive.libMute') === '1'
+  }
 };
 let booted = false;
 
@@ -57,6 +71,8 @@ $$('.nav').forEach(n=>n.onclick=()=>{
   $$('.view').forEach(v=>v.classList.add('hidden'));
   $('#view-'+n.dataset.view).classList.remove('hidden');
   if(n.dataset.view==='downloads') loadTasks();
+  if(n.dataset.view==='library') loadLibrary(true);
+  else stopLibrary();   // 离开视频库必须停掉正在播放的视频，否则后台一直在跑
   window.scrollTo({top:0,behavior:'smooth'});
 });
 $$('[data-goto]').forEach(a=>a.onclick=()=>$('.nav[data-view="'+a.dataset.goto+'"]').click());
@@ -577,6 +593,336 @@ function renderDashboard(tasks){
   const errs = tasks.filter(t=>t.status==='error').slice(0,6);
   $('#errList').innerHTML = errs.length? errs.map(t=>`<div class="mini warn"><div class="mt">${esc(t.title)}</div><div class="me">${esc(t.error||'')}</div></div>`).join('') : '<p class="empty">没有失败任务 🎉</p>';
 }
+
+// ==================== 视频库（沉浸播放） ====================
+// 数据来自扫盘：磁盘上真实存在的视频文件。上下滑动切换、进入视口自动播放，
+// 收藏与播放进度按「文件相对路径」存库，任务记录被清掉也不会丢。
+const LIB_PAGE = 40;
+const LIB_SORTS = [['time','时间 ↓'],['size','大小 ↓'],['name','名称 ↑']];
+let libObs = null;
+
+const libItems = () => $$('.lib-item');
+
+async function loadLibrary(reset){
+  const L = state.lib;
+  if(L.loading) return;
+  L.loading = true;
+  if(reset) L.page = 1;
+  const qs = new URLSearchParams({ cat:L.cat, star:L.starOnly?'1':'0',
+    q:L.q, page:String(L.page), limit:String(LIB_PAGE), sort:L.sort });
+  const tip = $('#libLoading');
+  if(tip){ tip.hidden = false; tip.textContent = reset ? '加载中…' : '加载更多…'; }
+  try{
+    const r = await api('/library?'+qs.toString());
+    L.total = r.total||0; L.all = r.all||0; L.has_more = !!r.has_more;
+    L.cats = r.cats||[]; L.starCount = r.star_count||0;
+    const incoming = r.items||[];
+    if(reset){
+      L.items = incoming;
+      renderLibFeed();
+    } else {
+      const feed = $('#libFeed');
+      incoming.forEach(it=>{
+        L.items.push(it);
+        feed.appendChild(makeLibItem(it, L.items.length-1));
+      });
+      applyLibMuteUI();
+      setupLibObserver();
+    }
+    renderLibCats();
+    updateLibEmpty();
+  }catch(e){ toast('视频库加载失败：'+e); }
+  finally{ L.loading = false; if(tip) tip.hidden = true; }
+}
+
+function renderLibFeed(){
+  const feed = $('#libFeed');
+  feed.innerHTML = '';
+  state.lib.items.forEach((it,i)=> feed.appendChild(makeLibItem(it,i)));
+  applyLibMuteUI();
+  setupLibObserver();
+  state.lib.index = 0;
+}
+
+function makeLibItem(it, i){
+  const el = document.createElement('div');
+  el.className = 'lib-item paused';
+  el.dataset.i = i;
+  el.dataset.path = it.path;
+  el.innerHTML = libItemHTML(it);
+  const v = el.querySelector('video');
+  if(it.thumb) v.poster = it.thumb;
+  bindLibItem(el, v);
+  return el;
+}
+
+function libItemHTML(it){
+  const resume = it.position > 5
+    ? `<span title="上次播放到 ${fmtDur(it.position)}">⏱ 续播 ${fmtDur(it.position)}</span>` : '';
+  return `<video src="/api/media/stream?path=${encodeURIComponent(it.path)}"
+      preload="none" playsinline webkit-playsinline loop></video>
+    <div class="lib-hint">▶</div>
+    <div class="lib-burst">♥</div>
+    <div class="lib-side">
+      <button class="lsb star${it.star?' on':''}" data-act="star" title="收藏（也可双击画面）">♥</button>
+      <button class="lsb" data-act="mute" title="静音 / 取消静音">🔊</button>
+      <button class="lsb" data-act="copy" title="复制原站链接">⧉</button>
+      <button class="lsb del" data-act="del" title="删除文件">⌫</button>
+    </div>
+    <div class="lib-meta">
+      <div class="lm-title">${esc(it.title)}</div>
+      <div class="lm-sub">
+        <b>${esc(it.cat_label||'未分类')}</b>
+        <span>${fmtGB(it.size)}</span>
+        <span>🕒 ${fmtTime(it.mtime)}</span>
+        ${it.plays?`<span>看过 ${it.plays} 次</span>`:''}
+        ${resume}
+      </div>
+    </div>
+    <div class="lib-prog"><i></i></div>`;
+}
+
+function bindLibItem(el, v){
+  let lastSave = 0;
+  let clickTimer = null;
+  const itemOf = () => state.lib.items[+el.dataset.i];
+
+  v.addEventListener('loadedmetadata', ()=>{
+    const it = itemOf(); if(!it) return;
+    if(v.duration && Math.abs((it.duration||0) - v.duration) > 2){
+      it.duration = v.duration;
+      api('/media/meta',{method:'POST',body:JSON.stringify({path:it.path, duration:v.duration})});
+    }
+    // 续播：上次看到 5 秒以上、且离结尾还有 10 秒以上
+    if(it.position > 5 && v.duration && it.position < v.duration - 10){
+      try{ v.currentTime = it.position; }catch(e){}
+    }
+  });
+  v.addEventListener('timeupdate', ()=>{
+    const bar = el.querySelector('.lib-prog i');
+    if(bar && v.duration) bar.style.width = Math.max(0,Math.min(100, v.currentTime/v.duration*100))+'%';
+    const now = Date.now();
+    if(now - lastSave > 5000){ lastSave = now; saveLibProgress(el); }
+  });
+  v.addEventListener('play', ()=>{
+    el.classList.remove('paused');
+    const it = itemOf();
+    if(it && !el.dataset.counted){
+      el.dataset.counted = '1';
+      it.plays = (it.plays||0) + 1;
+      api('/media/meta',{method:'POST',body:JSON.stringify({path:it.path, play:true})});
+    }
+  });
+  v.addEventListener('pause', ()=>{ el.classList.add('paused'); saveLibProgress(el); });
+
+  // 单击暂停/播放，240ms 内的第二次点击算双击收藏
+  v.addEventListener('click', ()=>{
+    if(clickTimer){ clearTimeout(clickTimer); clickTimer = null; libStar(el, true); return; }
+    clickTimer = setTimeout(()=>{
+      clickTimer = null;
+      if(v.paused) v.play().catch(()=>{}); else v.pause();
+    }, 240);
+  });
+  el.querySelector('.lib-prog').addEventListener('click', e=>{
+    if(!v.duration) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    v.currentTime = Math.max(0, Math.min(1, (e.clientX-r.left)/r.width)) * v.duration;
+  });
+  el.querySelectorAll('.lsb').forEach(b=> b.addEventListener('click', e=>{
+    e.stopPropagation();
+    const act = b.dataset.act;
+    if(act==='star') libStar(el);
+    else if(act==='mute') libToggleMute();
+    else if(act==='copy') libCopyLink(el);
+    else if(act==='del') libDelete(el);
+  }));
+}
+
+// 进入视口的自动播放 / 离开即停：一次只播一个，滑动切换才跟手
+function setupLibObserver(){
+  if(libObs) libObs.disconnect();
+  const feed = $('#libFeed');
+  libObs = new IntersectionObserver(entries=>{
+    entries.forEach(en=>{
+      const el = en.target;
+      const v = el.querySelector('video');
+      if(!v) return;
+      if(en.isIntersecting && en.intersectionRatio >= 0.6){
+        state.lib.index = +el.dataset.i;
+        v.muted = state.lib.mute;
+        const p = v.play();
+        if(p && p.catch) p.catch(()=> el.classList.add('paused'));
+      } else if(!v.paused){
+        v.pause();
+      }
+    });
+  }, {root: feed, threshold: [0.35, 0.6, 0.9]});
+  libItems().forEach(el=> libObs.observe(el));
+}
+
+function stopLibrary(){
+  libItems().forEach(el=>{
+    const v = el.querySelector('video');
+    if(v && !v.paused) v.pause();
+  });
+  if(libObs){ libObs.disconnect(); libObs = null; }
+}
+
+// 进度落库：离结尾 15 秒内视为看完，归零下次从头播
+function saveLibProgress(el){
+  const v = el.querySelector('video');
+  const it = state.lib.items[+el.dataset.i];
+  if(!v || !it || !v.duration) return;
+  const pos = (v.duration - v.currentTime < 15) ? 0 : v.currentTime;
+  if(Math.abs((it.position||0) - pos) < 2) return;
+  it.position = pos;
+  api('/media/meta',{method:'POST',
+    body:JSON.stringify({path:it.path, position:pos, duration:v.duration})});
+}
+
+function libStar(el, burst){
+  const it = state.lib.items[+el.dataset.i]; if(!it) return;
+  it.star = !it.star;
+  const b = el.querySelector('.lsb.star');
+  if(b) b.classList.toggle('on', it.star);
+  if(burst && it.star){
+    const h = el.querySelector('.lib-burst');
+    if(h){ h.classList.add('go'); setTimeout(()=>h.classList.remove('go'), 420); }
+  }
+  // 顶部「♥ 收藏」的计数跟着变，不然要等下次刷新才对
+  state.lib.starCount = Math.max(0, (state.lib.starCount||0) + (it.star ? 1 : -1));
+  renderLibCats();
+  api('/media/meta',{method:'POST',body:JSON.stringify({path:it.path, star:it.star})});
+  if(!burst) toast(it.star? '已收藏 ♥' : '已取消收藏');
+}
+
+function libToggleMute(){
+  state.lib.mute = !state.lib.mute;
+  localStorage.setItem('twixive.libMute', state.lib.mute ? '1' : '0');
+  libItems().forEach(el=>{
+    const v = el.querySelector('video');
+    if(v) v.muted = state.lib.mute;
+  });
+  applyLibMuteUI();
+  toast(state.lib.mute ? '已静音' : '已取消静音');
+}
+
+function applyLibMuteUI(){
+  const m = state.lib.mute;
+  libItems().forEach(el=>{
+    const b = el.querySelector('.lsb[data-act="mute"]');
+    if(b){ b.textContent = m ? '🔇' : '🔊'; b.classList.toggle('on', m); }
+  });
+}
+
+function libCopyLink(el){
+  const it = state.lib.items[+el.dataset.i]; if(!it) return;
+  const txt = it.url || (location.origin + '/api/media/stream?path=' + encodeURIComponent(it.path));
+  if(navigator.clipboard) navigator.clipboard.writeText(txt).then(()=> toast('已复制链接'), ()=> toast('复制失败'));
+  else toast(txt);
+}
+
+async function libDelete(el){
+  const i = +el.dataset.i;
+  const it = state.lib.items[i]; if(!it) return;
+  if(!confirm('删除视频文件？\n\n' + it.title + '\n' + fmtGB(it.size) +
+              '\n\n文件删除不可恢复，请确认。')) return;
+  const v = el.querySelector('video'); if(v) v.pause();
+  const r = await api('/media?path='+encodeURIComponent(it.path), {method:'DELETE'});
+  toast(r.freed ? ('已删除，释放 '+fmtGB(r.freed)) : '磁盘上已没有该文件，仅清理了记录');
+  el.remove();
+  state.lib.items.splice(i, 1);
+  libItems().forEach((n,k)=>{ n.dataset.i = k; });
+  state.lib.all = Math.max(0, state.lib.all - 1);
+  const c = state.lib.cats.find(x=>x.name === it.category);
+  if(c) c.count = Math.max(0, c.count - 1);
+  if(it.star) state.lib.starCount = Math.max(0, state.lib.starCount - 1);
+  if(libItems().length){
+    renderLibCats();
+    updateLibEmpty();
+    setupLibObserver();
+  } else {
+    loadLibrary(true);
+  }
+  loadStorage(false);
+  loadTasks();
+}
+
+function libScrollTo(i){
+  const arr = libItems();
+  if(i < 0) i = 0;
+  if(i >= arr.length){
+    if(state.lib.has_more){ state.lib.page++; loadLibrary(false); }
+    return;
+  }
+  arr[i].scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+function renderLibCats(){
+  const box = $('#libCats'); const L = state.lib;
+  const chips = [{name:'', label:'全部', count:L.all},
+                 {name:'__star__', label:'♥ 收藏', count:L.starCount}]
+    .concat(L.cats.map(c=>({name:c.name, label:c.label, count:c.count})));
+  box.innerHTML = chips.map(c=>{
+    const active = c.name === '__star__' ? L.starOnly : (!L.starOnly && L.cat === c.name);
+    return `<button class="lib-cat${active?' active':''}" data-cat="${esc(c.name)}">${esc(c.label)}<span class="lc-n">${c.count}</span></button>`;
+  }).join('');
+  $$('.lib-cat', box).forEach(b=> b.onclick = ()=>{
+    const n = b.dataset.cat;
+    if(n === '__star__'){ L.starOnly = true; L.cat = ''; }
+    else { L.starOnly = false; L.cat = n; }
+    loadLibrary(true);
+  });
+}
+
+function updateLibEmpty(){
+  const L = state.lib;
+  const has = libItems().length > 0;
+  $('#libEmpty').hidden = has;
+  if(!has){
+    $('#libEmpty').querySelector('p').textContent =
+      L.all === 0 ? '视频库还是空的'
+                  : (L.starOnly ? '还没有收藏的视频' : '这个筛选下没有视频');
+  }
+}
+
+$('#libBack').onclick = ()=> $('.nav[data-view="dashboard"]').click();
+$('#libSort').onclick = ()=>{
+  const i = LIB_SORTS.findIndex(s=>s[0] === state.lib.sort);
+  const nx = LIB_SORTS[(i+1) % LIB_SORTS.length];
+  state.lib.sort = nx[0];
+  $('#libSort').title = '当前排序：' + nx[1] + '（点击切换）';
+  toast('排序：' + nx[1]);
+  loadLibrary(true);
+};
+let libSearchTimer = null;
+$('#libSearch').addEventListener('input', e=>{
+  clearTimeout(libSearchTimer);
+  const val = e.target.value.trim();
+  libSearchTimer = setTimeout(()=>{ state.lib.q = val; loadLibrary(true); }, 400);
+});
+$('#libFeed').addEventListener('scroll', ()=>{
+  const f = $('#libFeed'); const L = state.lib;
+  if(!L.has_more || L.loading) return;
+  if(f.scrollTop + f.clientHeight*2 >= f.scrollHeight){ L.page++; loadLibrary(false); }
+});
+document.addEventListener('keydown', e=>{
+  if($('#view-library').classList.contains('hidden')) return;
+  if(['INPUT','TEXTAREA'].includes((document.activeElement||{}).tagName)) return;
+  if(e.key === 'ArrowDown' || e.key === 'ArrowUp'){
+    e.preventDefault();
+    libScrollTo(state.lib.index + (e.key === 'ArrowDown' ? 1 : -1));
+  } else if(e.key === ' '){
+    e.preventDefault();
+    const el = libItems()[state.lib.index];
+    const v = el && el.querySelector('video');
+    if(v) v.paused ? v.play().catch(()=>{}) : v.pause();
+  } else if(e.key === 'm'){ libToggleMute(); }
+  else if(e.key === 'f'){
+    const el = libItems()[state.lib.index];
+    if(el) libStar(el, true);
+  }
+});
 
 // ---- 预览弹窗 ----
 function openPreview(item){

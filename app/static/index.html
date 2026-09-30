@@ -23,6 +23,10 @@
         <span class="ni"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg></span>
         <span>控制台</span>
       </a>
+      <a class="nav" data-view="library">
+        <span class="ni"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M10 9.2l5 2.8-5 2.8z" fill="currentColor" stroke="none"/></svg></span>
+        <span>视频库</span>
+      </a>
       <a class="nav" data-view="categories">
         <span class="ni"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg></span>
         <span>分类下载</span>
@@ -76,6 +80,26 @@
           <div class="card-h"><h3>⚠️ 失败待重试</h3><button class="btn ghost sm" id="btnRetryFailed">一键重试失败</button></div>
           <div id="errList" class="mini-list"></div>
         </div>
+      </div>
+    </section>
+
+    <!-- 视频库（沉浸播放） -->
+    <section class="view hidden" id="view-library">
+      <div class="lib-wrap">
+        <div class="lib-top">
+          <button class="lib-btn" id="libBack" title="返回控制台">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M15 5l-7 7 7 7"/></svg>
+          </button>
+          <div class="lib-cats" id="libCats"></div>
+          <input class="lib-search" id="libSearch" placeholder="搜索标题…" />
+          <button class="lib-btn" id="libSort" title="切换排序：时间 / 大小 / 名称">⇅</button>
+        </div>
+        <div class="lib-feed" id="libFeed"></div>
+        <div class="lib-empty" id="libEmpty" hidden>
+          <p>这里还没有视频</p>
+          <p class="le-sub">去「分类下载」勾选视频下载，完成后就会出现在这里</p>
+        </div>
+        <div class="lib-loading" id="libLoading" hidden>加载中…</div>
       </div>
     </section>
 

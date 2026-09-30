@@ -20,12 +20,17 @@
   POST /api/auto/run               立即执行一次巡检
   GET  /api/proxy/status           代理熔断状态（是否暂停、剩余秒数）
   POST /api/proxy/test             服务端自检代理连通性（含直连对照）
+  GET  /api/library                视频库列表（扫盘 + 任务信息 + 收藏合并）
+  GET  /api/media/stream           视频流（支持 Range，可拖动进度）
+  POST /api/media/meta             写收藏 / 播放进度
+  DELETE /api/media?path=          删除视频文件（连带任务记录与收藏）
 """
 import os
 import shutil
 import time
+from datetime import datetime, timezone
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from . import db
 from . import downloader
@@ -42,8 +47,16 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 @app.middleware("http")
 async def no_cache_middleware(request: Request, call_next):
-    """禁止浏览器/代理缓存任何响应，避免旧页面残留。"""
+    """禁止浏览器/代理缓存任何响应，避免旧页面残留。
+
+    视频流除外：拖进度条会产生大量 Range 请求，禁缓存会让播放器每次重下已经
+    缓冲过的片段，拖动明显发卡。视频内容按文件路径寻址且不会被改写，可以放手
+    让浏览器缓存。
+    """
     resp = await call_next(request)
+    if request.url.path.startswith("/api/media/stream"):
+        resp.headers["Cache-Control"] = "private, max-age=86400"
+        return resp
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
     resp.headers["Expires"] = "0"
@@ -147,6 +160,76 @@ def _safe_remove(rel_path, root):
             break
         d = os.path.dirname(d)
     return size
+
+
+# ---- 视频库：扫盘 ----
+VIDEO_EXT = (".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".ts", ".flv")
+_LIB = {"t": 0.0, "files": None}
+_LIB_TTL = 20
+
+
+def _safe_full(rel_path, root=None):
+    """把库里/前端传来的相对路径解析成下载目录内的绝对路径。
+
+    越界（含 ../、绝对路径、指向目录外）一律返回 None —— 这条路径既用于
+    播放也用于删除，必须挡死。
+    """
+    if not rel_path:
+        return None
+    root = root or db.get_settings().get("download_path") or ""
+    if not root:
+        return None
+    root_r = os.path.realpath(root)
+    full = os.path.realpath(os.path.join(root_r, rel_path))
+    if full == root_r or not full.startswith(root_r + os.sep):
+        return None
+    return full
+
+
+def _scan_media():
+    """递归扫下载目录，返回 {相对路径: (大小, 修改时间)}。
+
+    以文件为准而不是以任务记录为准：库里存在没有任务记录的视频文件，反过来
+    也有任务记录已删但文件还在的情况。视频库要展示的是「磁盘上真实有什么」。
+    """
+    root = db.get_settings().get("download_path") or ""
+    out = {}
+    if not root or not os.path.isdir(root):
+        return out
+    for base, _dirs, names in os.walk(root):
+        for n in names:
+            if not n.lower().endswith(VIDEO_EXT):
+                continue
+            full = os.path.join(base, n)
+            try:
+                st = os.stat(full)
+            except Exception:
+                continue
+            out[os.path.relpath(full, root)] = (st.st_size, st.st_mtime)
+    return out
+
+
+def _lib_files():
+    now = time.time()
+    if _LIB["files"] is None or (now - _LIB["t"]) > _LIB_TTL:
+        _LIB.update(t=now, files=_scan_media())
+    return _LIB["files"]
+
+
+def _cat_display(name):
+    """分类名 → 中文显示名。
+
+    任务记录里的分类名形如 `/new`，而磁盘目录是 sanitize 后的 `_new`；对没有
+    任务记录的孤儿文件，目录名反查一次中文名，查不到就原样显示。
+    """
+    if not name:
+        return "未分类"
+    lm = _cat_label_map()
+    for cand in (name, "/" + name.lstrip("_"), name.lstrip("/")):
+        info = lm.get(cand)
+        if info:
+            return info.get("label") or cand
+    return name
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -353,6 +436,184 @@ def storage(force: int = 0):
         _STORAGE.update(t=now, data={"bytes": total, "files": files, "tracked": tracked,
                                      "path": path, "disk": disk})
     return _STORAGE["data"]
+
+
+# ---- 视频库 ----
+@app.get("/api/library")
+def library(cat: str = "", star: int = 0, q: str = "", page: int = 1,
+            limit: int = 40, sort: str = "time"):
+    """视频库列表：扫盘（真实文件）+ 任务记录（标题/分类/原站链接）+ 收藏进度。
+
+    正在下载/等待中的半成品会被排除，避免把没下完的文件当成可播放视频。
+    """
+    files = _lib_files()
+    busy = db.busy_paths()
+    tmap, votes = {}, {}
+    for t in db.list_tasks(5000):
+        p = t.get("path") or ""
+        c = t.get("category") or ""
+        # 目录名 → 分类名：分类名里的 "/" 在落盘时被换成了 "_"（/new → _new、
+        # /ranking/24h → _ranking_24h），没法靠字符串反推（realtime 就不带斜杠）。
+        # 用同目录下历史任务记录投票得出，孤儿文件才能归到正确的中文分类上。
+        if p and c and os.sep in p:
+            d = p.split(os.sep)[0]
+            votes.setdefault(d, {})
+            votes[d][c] = votes[d].get(c, 0) + 1
+        if p and t.get("status") == "done" and p not in tmap:
+            tmap[p] = t
+    d2c = {d: max(v.items(), key=lambda x: x[1])[0] for d, v in votes.items()}
+    meta = db.media_map()
+
+    items = []
+    for rel, (size, mtime) in files.items():
+        if rel in busy:
+            continue
+        t = tmap.get(rel) or {}
+        cat_name = t.get("category") or ""
+        if not cat_name:
+            head = rel.split(os.sep)[0] if os.sep in rel else ""
+            cat_name = d2c.get(head) or head
+        m = meta.get(rel) or {}
+        items.append({
+            "path": rel,
+            "title": t.get("title") or os.path.splitext(os.path.basename(rel))[0],
+            "category": cat_name,
+            "cat_label": _cat_display(cat_name),
+            "size": size,
+            "mtime": datetime.fromtimestamp(mtime, timezone.utc).isoformat(),
+            "url": t.get("url") or "",
+            "thumb": t.get("thumbnail") or "",
+            "star": bool(m.get("star")),
+            "position": float(m.get("position") or 0.0),
+            "duration": float(m.get("duration") or 0.0),
+            "plays": int(m.get("plays") or 0),
+        })
+
+    # 分类计数（不受当前筛选影响，chips 上的数字才稳定）
+    counts, star_count = {}, 0
+    for it in items:
+        counts[it["category"]] = counts.get(it["category"], 0) + 1
+        if it["star"]:
+            star_count += 1
+    cats = [{"name": k, "label": _cat_display(k), "count": v}
+            for k, v in sorted(counts.items(), key=lambda x: (-x[1], x[0]))]
+
+    sel = items
+    if cat:
+        sel = [it for it in sel if it["category"] == cat]
+    if star:
+        sel = [it for it in sel if it["star"]]
+    q = (q or "").strip().lower()
+    if q:
+        sel = [it for it in sel if q in it["title"].lower() or q in it["path"].lower()]
+    if sort == "size":
+        sel.sort(key=lambda x: -x["size"])
+    elif sort == "name":
+        sel.sort(key=lambda x: x["title"])
+    else:                       # time：按文件落盘时间，新下的在前
+        sel.sort(key=lambda x: x["mtime"], reverse=True)
+
+    try:
+        page = max(1, int(page))
+        limit = max(1, min(200, int(limit)))
+    except Exception:
+        page, limit = 1, 40
+    start = (page - 1) * limit
+    chunk = sel[start:start + limit]
+    return {"items": chunk, "total": len(sel), "all": len(items), "page": page,
+            "has_more": start + limit < len(sel), "cats": cats,
+            "star_count": star_count}
+
+
+@app.get("/api/media/stream")
+def media_stream(path: str, request: Request):
+    """视频流，自己实现 HTTP Range（206/416）。
+
+    Starlette 0.38 的 FileResponse 不带 Range 支持（实测只回 200 全量），
+    而播放器拖动进度、跳到未缓冲位置全靠 206 —— 用 FileResponse 的话进度条
+    一点就从头重下。这里手写：单段 Range + 512KB 分块流式吐数据。
+    """
+    full = _safe_full(path)
+    if not full or not os.path.isfile(full):
+        return JSONResponse({"ok": False, "error": "文件不存在或已被删除"},
+                            status_code=404)
+    size = os.path.getsize(full)
+    ext = os.path.splitext(full)[1].lower()
+    mime = {".webm": "video/webm", ".mkv": "video/x-matroska",
+            ".mov": "video/quicktime"}.get(ext, "video/mp4")
+
+    start, end, status = 0, max(0, size - 1), 200
+    rh = request.headers.get("range") or ""
+    if rh.startswith("bytes="):
+        spec = rh[6:].split(",")[0].strip()          # 只处理单段
+        try:
+            a, _, b = spec.partition("-")
+            if a:
+                start = int(a)
+                end = int(b) if b else size - 1
+            elif b:                                   # bytes=-500 取末尾
+                start = max(0, size - int(b))
+                end = size - 1
+        except Exception:
+            start, end = 0, size - 1
+        end = min(end, size - 1)
+        if start > end or start >= size:
+            return JSONResponse({"ok": False, "error": "请求范围超出文件大小"},
+                                status_code=416,
+                                headers={"Content-Range": "bytes */%d" % size})
+        status = 206
+
+    length = end - start + 1
+
+    def iter_file():
+        with open(full, "rb") as f:
+            f.seek(start)
+            left = length
+            while left > 0:
+                chunk = f.read(min(512 * 1024, left))
+                if not chunk:
+                    break
+                left -= len(chunk)
+                yield chunk
+
+    headers = {"Content-Length": str(length), "Accept-Ranges": "bytes"}
+    if status == 206:
+        headers["Content-Range"] = "bytes %d-%d/%d" % (start, end, size)
+    return StreamingResponse(iter_file(), status_code=status,
+                             media_type=mime, headers=headers)
+
+
+@app.post("/api/media/meta")
+async def media_meta(req: Request):
+    """写收藏 / 播放进度。只更新显式传进来的字段。"""
+    body = await req.json()
+    p = (body.get("path") or "").strip()
+    if not _safe_full(p):
+        return {"ok": False, "error": "路径非法"}
+    def num(k):
+        v = body.get(k)
+        try:
+            return float(v) if v is not None else None
+        except Exception:
+            return None
+    db.set_media(p, star=body.get("star"), position=num("position"),
+                 duration=num("duration"), play=bool(body.get("play")))
+    return {"ok": True}
+
+
+@app.delete("/api/media")
+def media_delete(path: str):
+    """删除视频文件本身，连带清掉收藏记录和指向它的任务记录。
+
+    文件删除不可恢复，由前端二次确认；这里只负责路径越界防护。
+    """
+    root = db.get_settings().get("download_path")
+    freed = _safe_remove(path, root)
+    db.delete_media(path)
+    removed = db.delete_tasks_by_path(path)
+    _LIB["t"] = 0        # 扫盘缓存立即失效
+    _STORAGE["t"] = 0
+    return {"ok": True, "freed": freed, "tasks_removed": removed}
 
 
 @app.post("/api/tasks/{tid}/cancel")

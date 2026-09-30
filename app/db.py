@@ -64,6 +64,13 @@ def init():
             c.execute("ALTER TABLE tasks ADD COLUMN thumbnail TEXT DEFAULT ''")
         except Exception:
             pass
+        # 视频库：以「文件相对路径」为主键记录收藏与播放进度。
+        # 不能用 tasks.id 当主键 —— 库里存在没有任务记录的历史文件（扫盘比记录多
+        # 出的那部分），任务记录被清掉后文件仍在，收藏和进度必须跟着文件走。
+        c.execute("""CREATE TABLE IF NOT EXISTS media (
+            path TEXT PRIMARY KEY, star INTEGER DEFAULT 0,
+            position REAL DEFAULT 0, duration REAL DEFAULT 0,
+            plays INTEGER DEFAULT 0, updated_at TEXT)""")
         # 写入缺省设置（仅当 key 不存在）
         for k, v in DEFAULT_SETTINGS.items():
             c.execute("INSERT OR IGNORE INTO settings(key, value) VALUES(?,?)",
@@ -313,3 +320,61 @@ def clear_finished():
     with _lock, sqlite3.connect(DB_PATH) as c:
         c.execute("DELETE FROM tasks WHERE status IN "
                   "('done','error','cancelled','skipped')")
+
+
+# ---- media（视频库：收藏 / 播放进度）----
+def media_map():
+    """{相对路径: {star, position, duration, plays}}"""
+    with _lock, sqlite3.connect(DB_PATH) as c:
+        rows = c.execute("SELECT path, star, position, duration, plays "
+                         "FROM media").fetchall()
+    return {r[0]: {"star": bool(r[1]), "position": r[2] or 0.0,
+                   "duration": r[3] or 0.0, "plays": r[4] or 0}
+            for r in rows}
+
+
+def set_media(path, star=None, position=None, duration=None, play=False):
+    """写收藏/播放进度。只更新显式传入的字段，缺省不动。"""
+    if not path:
+        return
+    sets, vals = [], []
+    if star is not None:
+        sets.append("star=?")
+        vals.append(int(bool(star)))
+    if position is not None:
+        sets.append("position=?")
+        vals.append(max(0.0, float(position)))
+    if duration is not None:
+        sets.append("duration=?")
+        vals.append(max(0.0, float(duration)))
+    if play:
+        sets.append("plays=plays+1")
+    sets.append("updated_at=?")
+    vals.append(_now())
+    with _lock, sqlite3.connect(DB_PATH) as c:
+        c.execute("INSERT OR IGNORE INTO media(path, star, position, duration, plays, "
+                  "updated_at) VALUES(?,?,?,?,?,?)", (path, 0, 0.0, 0.0, 0, _now()))
+        c.execute("UPDATE media SET %s WHERE path=?" % ", ".join(sets), vals + [path])
+
+
+def delete_media(path):
+    with _lock, sqlite3.connect(DB_PATH) as c:
+        c.execute("DELETE FROM media WHERE path=?", (path,))
+
+
+def delete_tasks_by_path(path):
+    """删除指向某个文件的全部任务记录（文件被删掉后记录已无意义）。"""
+    if not path:
+        return 0
+    with _lock, sqlite3.connect(DB_PATH) as c:
+        c.execute("DELETE FROM tasks WHERE path=?", (path,))
+        return c.execute("SELECT changes()").fetchone()[0]
+
+
+def busy_paths():
+    """正在下载/等待中的任务落盘路径 —— 视频库要排除这些半成品。"""
+    with _lock, sqlite3.connect(DB_PATH) as c:
+        rows = c.execute("SELECT path FROM tasks WHERE status IN "
+                         "('pending','downloading') AND path IS NOT NULL "
+                         "AND path<>''").fetchall()
+    return {r[0] for r in rows}
