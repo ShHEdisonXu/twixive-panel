@@ -26,6 +26,7 @@
   DELETE /api/media?path=          删除视频文件（连带任务记录与收藏）
 """
 import os
+import random
 import shutil
 import time
 from datetime import datetime, timezone
@@ -441,7 +442,7 @@ def storage(force: int = 0):
 # ---- 视频库 ----
 @app.get("/api/library")
 def library(cat: str = "", star: int = 0, q: str = "", page: int = 1,
-            limit: int = 40, sort: str = "time"):
+            limit: int = 40, sort: str = "time", seed: str = ""):
     """视频库列表：扫盘（真实文件）+ 任务记录（标题/分类/原站链接）+ 收藏进度。
 
     正在下载/等待中的半成品会被排除，避免把没下完的文件当成可播放视频。
@@ -506,7 +507,12 @@ def library(cat: str = "", star: int = 0, q: str = "", page: int = 1,
     q = (q or "").strip().lower()
     if q:
         sel = [it for it in sel if q in it["title"].lower() or q in it["path"].lower()]
-    if sort == "size":
+    if sort == "random":
+        # 随客户端传来的 seed 做确定性洗牌：同一 seed 下分页结果稳定，
+        # 滚动加载「加载更多」时不会前后两页顺序错乱。
+        rnd = random.Random(seed or "twixive-lib")
+        rnd.shuffle(sel)
+    elif sort == "size":
         sel.sort(key=lambda x: -x["size"])
     elif sort == "name":
         sel.sort(key=lambda x: x["title"])

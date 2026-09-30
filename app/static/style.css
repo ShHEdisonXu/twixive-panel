@@ -426,12 +426,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Micr
 .lib-item{position:relative;height:100%;scroll-snap-align:start;scroll-snap-stop:always;
   display:flex;align-items:center;justify-content:center;background:#000;overflow:hidden}
 .lib-item video{max-width:100%;max-height:100%;display:block;background:#000}
-.lib-item .lib-hint{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%) scale(.85);
-  width:68px;height:68px;border-radius:50%;background:rgba(0,0,0,.34);backdrop-filter:blur(4px);
-  color:#fff;display:flex;align-items:center;justify-content:center;
-  opacity:0;transition:.2s;pointer-events:none}
-.lib-item .lib-hint svg{width:30px;height:30px;margin-left:3px}
-.lib-item.paused .lib-hint{opacity:1;transform:translate(-50%,-50%) scale(1)}
+/* 全屏（CSS 方式）：固定覆盖视口，保住自定义 UI（进度条/侧栏/手势），
+   绝不退化到系统原生视频播放器 */
+.lib-item.lib-fs{position:fixed;inset:0;z-index:9998;background:#000}
+.lib-item.lib-fs video{max-width:100%;max-height:100%}
 .lib-item .lib-burst{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%) scale(.35);
   color:#fe2c55;opacity:0;pointer-events:none;transition:.38s;
   filter:drop-shadow(0 0 18px rgba(254,44,85,.7))}
@@ -469,7 +467,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Micr
   align-items:center;gap:14px;background:rgba(0,0,0,.66);backdrop-filter:blur(7px);
   border:1px solid rgba(255,255,255,.12);border-radius:16px;padding:12px 20px;color:#fff;font-size:14px}
 .lib-item.seeking .lib-seek{display:flex}
-.lib-item.seeking .lib-hint{opacity:0}
 .lsk-arrow{display:flex;opacity:.28;transition:.15s}
 .lsk-arrow svg{width:19px;height:19px}
 .lib-seek.fwd .lsk-fwd,.lib-seek.back .lsk-back{opacity:1;color:#fe2c55}

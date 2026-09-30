@@ -9,6 +9,8 @@
 import os
 import re
 import time
+import shutil
+import subprocess
 import threading
 import hashlib
 import urllib.parse
@@ -433,7 +435,27 @@ class DownloadManager:
                     rel = rel2
                 except Exception:
                     pass
+            # 时长上限：来源不提供时长，只能下完再探。超过则删文件、标记跳过。
+            # 注意：仍会先把整段下完（与大小上限的「下到一半放弃」不同），
+            # 因为时长要读完文件才能确定；设为 0 则不限制。
+            max_min = float(s.get("max_duration_min") or 0)
+            if max_min > 0:
+                dur = _video_duration(full)
+                if dur and dur > max_min * 60:
+                    self._give_up_duration(tid, full, dur, max_min)
+                    return
             db.update_task(tid, path=rel, size=done, progress=100.0)
+
+    def _give_up_duration(self, tid, full, actual_sec, max_min):
+        """超过时长上限：删掉已下文件并标记为「已跳过」，不保留也不重试。"""
+        try:
+            if os.path.exists(full):
+                os.remove(full)
+        except Exception:
+            pass
+        db.update_task(tid, status="skipped",
+                       error="超过时长上限：%.1f 分钟 > 设置上限 %d 分钟，已跳过"
+                             % (actual_sec / 60.0, int(max_min)))
 
     def _give_up_size(self, tid, full, actual, max_mb):
         """超过大小上限：删除半成品并标记为「已跳过」。"""
@@ -466,6 +488,98 @@ class DownloadManager:
         ctype = resp.headers.get("Content-Type", "")
         return {"video/mp4": "mp4", "video/webm": "webm", "video/x-matroska": "mkv",
                 "video/quicktime": "mov"}.get(ctype.lower(), "mp4")
+
+
+# ---- 视频时长探测（用于「时长上限」过滤）----
+# 来源站点不提供时长，只能等文件下完再读。优先 ffprobe（覆盖全格式），
+# NAS 没装 ffmpeg 时退化到纯 Python 解析 MP4/m4v/mov 的 mvhd 盒（零依赖、不读媒体数据）。
+def _mp4_duration(path):
+    """从 MP4 家族文件的 mvhd 盒读取时长(秒)，失败/未知返回 0.0。
+
+    只 seek 读盒头结构、跳过媒体数据，大文件也不占内存。mvhd 可能有 v0/v1
+    两种布局，timescale 与 duration 偏移不同，这里都处理。
+    """
+    try:
+        total = os.path.getsize(path)
+    except Exception:
+        return 0.0
+    try:
+        f = open(path, "rb")
+    except Exception:
+        return 0.0
+    try:
+        def walk(target, start, end):
+            pos = start
+            while pos + 8 <= end:
+                f.seek(pos)
+                h = f.read(8)
+                if len(h) < 8:
+                    return None
+                size = int.from_bytes(h[:4], "big")
+                typ = h[4:8]
+                if size == 0:
+                    break
+                content = pos + 8
+                if size == 1:                  # 64 位 largesize：再读 8 字节
+                    ext = f.read(8)
+                    if len(ext) < 8:
+                        return None
+                    size = int.from_bytes(ext, "big")
+                    content = pos + 16
+                if typ == target:
+                    return content, size
+                # moov 是容器盒，mvhd 直接挂在它下面，递归一层即可
+                if typ == b"moov" and content < end:
+                    res = walk(target, content, min(pos + size, total))
+                    if res:
+                        return res
+                pos = pos + size
+            return None
+
+        res = walk(b"moov", 0, total)
+        if not res:
+            return 0.0
+        mvhd_cs, mvhd_size = walk(b"mvhd", res[0], res[0] + res[1])
+        if not mvhd_cs:
+            return 0.0
+        f.seek(mvhd_cs)
+        data = f.read(min(mvhd_size, 64))
+    except Exception:
+        return 0.0
+    finally:
+        f.close()
+    if len(data) < 20:
+        return 0.0
+    version = data[0]
+    try:
+        if version == 1:
+            timescale = int.from_bytes(data[20:24], "big")
+            duration = int.from_bytes(data[24:32], "big")
+        else:
+            timescale = int.from_bytes(data[12:16], "big")
+            duration = int.from_bytes(data[16:20], "big")
+    except Exception:
+        return 0.0
+    if timescale and duration:
+        return duration / timescale
+    return 0.0
+
+
+def _video_duration(path):
+    """读取视频时长(秒)。优先 ffprobe，否则用 MP4 解析；未知返回 0.0（绝不误删）。"""
+    fp = shutil.which("ffprobe")
+    if fp:
+        try:
+            out = subprocess.run(
+                [fp, "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=nokey=1:noprint_wrappers=1", path],
+                capture_output=True, text=True, timeout=30)
+            d = float(out.stdout.strip())
+            if d > 0:
+                return d
+        except Exception:
+            pass
+    return _mp4_duration(path)
 
 
 def task_title(tid):

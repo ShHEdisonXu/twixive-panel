@@ -51,6 +51,7 @@ let state = {
     items: [], total: 0, all: 0, page: 1, has_more: false, loading: false,
     cat: '', starOnly: false, q: '', sort: 'time',
     cats: [], starCount: 0, index: 0,
+    seed: '',   // 随机排序用的确定性种子，保证分页加载时顺序不乱
     // 'feed' 沉浸式单条（抖音式） / 'grid' 一行三个的网格
     mute: localStorage.getItem('twixive.libMute') === '1'
   }
@@ -135,6 +136,7 @@ function fillSettings(){
   const pe=$('#proxy_enabled'); if(pe) pe.checked = s.proxy_enabled!==false;
   $('#concurrent').value=s.concurrent??3; $('#rate_delay').value=s.rate_delay??2;
   $('#retry_times').value=s.retry_times??2; $('#max_size_mb').value=s.max_size_mb??0;
+  $('#max_duration_min').value=s.max_duration_min??0;
   $('#download_path').value=s.download_path||'';
   $('#auto_enabled').checked=!!s.auto_enabled; $('#auto_interval').value=s.auto_interval??60;
   updateProxyChip();
@@ -599,11 +601,11 @@ function renderDashboard(tasks){
 // 数据来自扫盘：磁盘上真实存在的视频文件。上下滑动切换、进入视口自动播放，
 // 收藏与播放进度按「文件相对路径」存库，任务记录被清掉也不会丢。
 const LIB_PAGE = 40;
-const LIB_SORTS = [['time','时间 ↓'],['size','大小 ↓'],['name','名称 ↑']];
+const LIB_SORTS = [['time','时间 ↓'],['size','大小 ↓'],['name','名称 ↑'],['random','随机']];
 const LIB_SPEED = 3;        // 长按倍速（抖音同款 3×）
 const LIB_SEEK_RATIO = 0.6; // 画面上横向划过整屏 ≈ 快进总时长的 60%
 const LIB_PROG_RATIO = 1;   // 进度条上横向拖过整条 ≈ 走完整段视频（相对位移，不跟手指绝对位置）
-const LIB_PRELOAD_AHEAD = 2; // 预加载：当前 + 前 1 + 后 2 条，滑到下一条即时播放不卡
+const LIB_PRELOAD_AHEAD = 3; // 预加载：当前 + 前 1 + 后 3 条，滑到下一条即时播放不卡
 let libObs = null;
 let libMouse = null;        // 桌面端「按住倍速 / 横向拖动快进」的当前会话
 
@@ -660,6 +662,7 @@ async function loadLibrary(reset){
   if(reset) L.page = 1;
   const qs = new URLSearchParams({ cat:L.cat, star:L.starOnly?'1':'0',
     q:L.q, page:String(L.page), limit:String(LIB_PAGE), sort:L.sort });
+  if(L.sort === 'random' && L.seed) qs.set('seed', L.seed);
   const tip = $('#libLoading');
   if(tip){ tip.hidden = false; tip.textContent = reset ? '加载中…' : '加载更多…'; }
   try{
@@ -713,7 +716,6 @@ function libItemHTML(it){
   const dur = it.duration ? fmtDur(it.duration) : '';
   return `<video src="/api/media/stream?path=${encodeURIComponent(it.path)}"
       preload="none" playsinline webkit-playsinline loop></video>
-    <div class="lib-hint">${ICON.play}</div>
     <div class="lib-burst">${ICON.heart}</div>
     <div class="lib-seek">
       <span class="lsk-arrow lsk-back">${ICON.seekL}</span>
@@ -896,6 +898,8 @@ function bindLibItem(el, v){
     if(now - lastSave > 5000){ lastSave = now; saveLibProgress(el); }
   });
   v.addEventListener('play', ()=>{
+    if(el.dataset.priming && state.lib.index !== +el.dataset.i) return; // 仅预热播放，不计次
+    el.dataset.priming = '';
     el.classList.remove('paused');
     const it = itemOf();
     if(it && !el.dataset.counted){
@@ -963,23 +967,24 @@ function libOpen(el){
   window.open(it.url || ('/api/media/stream?path=' + encodeURIComponent(it.path)), '_blank');
 }
 
-// 全屏：优先 requestFullscreen 保住自定义 UI（进度条/侧栏）；iOS Safari 退化到原生视频全屏
+// 全屏：优先 requestFullscreen 保住自定义 UI（进度条/侧栏）；
+// 不支持真正的全屏（iPhone Safari 无 requestFullscreen）时，用 CSS 全屏覆盖视口，
+// 而不是退化到系统原生视频播放器——原生播放器会接管整个屏幕、丢失我们的进度条/侧栏/手势。
 function toggleLibFullscreen(el){
-  const v = el.querySelector('video');
   const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+  const cssFs = el.classList.contains('lib-fs');
   if(fsEl){
     const exit = document.exitFullscreen || document.webkitExitFullscreen;
     if(exit) exit.call(document).catch(()=>{});
     return;
   }
+  if(cssFs){ el.classList.remove('lib-fs'); return; }
   const req = el.requestFullscreen || el.webkitRequestFullscreen;
   if(req){
     const p = req.call(el);
-    if(p && p.catch) p.catch(()=>{ if(v.webkitEnterFullscreen) v.webkitEnterFullscreen(); });
-  } else if(v.webkitEnterFullscreen){
-    v.webkitEnterFullscreen();
+    if(p && p.catch) p.catch(()=>{ el.classList.add('lib-fs'); });  // 失败 → CSS 全屏，绝不进原生播放器
   } else {
-    toast('当前浏览器不支持全屏');
+    el.classList.add('lib-fs');   // 无 requestFullscreen（iPhone）→ 直接 CSS 全屏
   }
 }
 
@@ -1033,11 +1038,39 @@ function refreshPreload(i){
       if(v.preload !== 'auto') v.preload = 'auto';
       if(v.readyState < 1){ try{ v.load(); }catch(e){} }   // 还没加载过的才暖缓冲
       el.classList.add('preloading');
+      if(idx !== i) primeLibVideo(el, v);   // 预热相邻视频缓冲，滑到时即时起播、不再卡
     } else {
       if(v.preload !== 'none') v.preload = 'none';
       el.classList.remove('preloading');
+      v.dataset.priming = '';   // 移出窗口，下回再进入时允许重新预热
     }
   });
+}
+
+// 预热相邻视频：iOS Safari 直接忽略 preload，只有真正 play 才开始缓冲，
+// 所以滑到下一条前它永远是空的、起播要等缓冲——这正是「起播慢」的根因。
+// 这里静音 play 一下、等 playing 后再 pause，把开头几秒缓冲到本地，
+// 滑到时就能即时起播。当前正在看的视频（idx===i）由观察器负责真正播放，不在此预热。
+function primeLibVideo(el, v){
+  if(el.dataset.priming) return;
+  if(v.readyState >= 2) return;                       // 已有可播数据，无需再预热
+  if(v.networkState === 1 && v.readyState >= 1) return; // 正在加载中
+  el.dataset.priming = '1';
+  v.muted = true;
+  const onPlay = ()=>{
+    v.removeEventListener('playing', onPlay);
+    // 缓冲已经启动，停住别真播，等用户滑到再播；
+    // 但若此刻它已变成正在看的那条，就让它继续播（不要抢着暂停）
+    setTimeout(()=>{
+      if(state.lib.index === +el.dataset.i && !v.paused) return;
+      try{ v.pause(); }catch(_){}
+    }, 80);
+  };
+  v.addEventListener('playing', onPlay);
+  try{
+    const p = v.play();
+    if(p && p.catch) p.catch(()=>{ v.removeEventListener('playing', onPlay); el.dataset.priming = ''; });
+  }catch(_){ el.dataset.priming = ''; }
 }
 
 // 进度落库：离结尾 15 秒内视为看完，归零下次从头播
@@ -1171,6 +1204,10 @@ $('#libSort').onclick = ()=>{
   const i = LIB_SORTS.findIndex(s=>s[0] === state.lib.sort);
   const nx = LIB_SORTS[(i+1) % LIB_SORTS.length];
   state.lib.sort = nx[0];
+  // 进入随机：每次都重新生成一个种子，得到一份全新的洗牌顺序
+  if(nx[0] === 'random'){
+    state.lib.seed = String(Math.floor(Math.random()*1e12));
+  }
   $('#libSort').title = '当前排序：' + nx[1] + '（点击切换）';
   toast('排序：' + nx[1]);
   loadLibrary(true);
@@ -1236,6 +1273,7 @@ $('#btnSaveSettings').onclick=async()=>{
     proxy_enabled:$('#proxy_enabled').checked,
     concurrent:+$('#concurrent').value||1, rate_delay:+$('#rate_delay').value||0,
     retry_times:+$('#retry_times').value||0, max_size_mb:+$('#max_size_mb').value||0,
+    max_duration_min:+$('#max_duration_min').value||0,
     auto_enabled:$('#auto_enabled').checked, auto_interval:+$('#auto_interval').value||60
   };
   state.settings=await api('/settings',{method:'POST',body:JSON.stringify(patch)});
