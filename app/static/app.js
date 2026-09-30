@@ -51,6 +51,8 @@ let state = {
     items: [], total: 0, all: 0, page: 1, has_more: false, loading: false,
     cat: '', starOnly: false, q: '', sort: 'time',
     cats: [], starCount: 0, index: 0,
+    // 'feed' 沉浸式单条（抖音式） / 'grid' 一行三个的网格
+    mode: (localStorage.getItem('twixive.libMode') === 'grid') ? 'grid' : 'feed',
     mute: localStorage.getItem('twixive.libMute') === '1'
   }
 };
@@ -599,7 +601,39 @@ function renderDashboard(tasks){
 // 收藏与播放进度按「文件相对路径」存库，任务记录被清掉也不会丢。
 const LIB_PAGE = 40;
 const LIB_SORTS = [['time','时间 ↓'],['size','大小 ↓'],['name','名称 ↑']];
+const LIB_SPEED = 3;        // 长按倍速（抖音同款 3×）
+const LIB_SEEK_RATIO = 0.6; // 横向划过整屏 ≈ 快进总时长的 60%
 let libObs = null;
+let libPinch = null;
+let libMouse = null;        // 桌面端「按住倍速 / 横向拖动快进」的当前会话
+
+// 桌面端手势：按住不动 = 倍速，横向拖动 = 快进（纵向留给滚动切换）
+window.addEventListener('mousemove', e=>{
+  const m = libMouse; if(!m) return;
+  const dx = e.clientX - m.sx, dy = e.clientY - m.sy;
+  if(!m.moved && (Math.abs(dx) > 8 || Math.abs(dy) > 8)){
+    m.moved = true; clearTimeout(m.lpTimer);
+    if(m.speeding){ m.speeding = false; m.v.playbackRate = 1; m.el.classList.remove('speeding'); }
+  }
+  if(m.moved && !m.axis) m.axis = Math.abs(dx) > Math.abs(dy) * 1.3 ? 'x' : 'y';
+  if(m.axis !== 'x') return;
+  const v = m.v, el = m.el, w = el.clientWidth || 1;
+  if(!m.seeking && Math.abs(dx) > 12){
+    m.seeking = true; m.seekX0 = m.sx; m.seekFrom = v.currentTime || 0;
+    el.classList.add('seeking'); paintLibSeek(el, v, 0);
+  }
+  if(m.seeking && v.duration){
+    const nt = Math.max(0, Math.min(v.duration,
+      m.seekFrom + (e.clientX - m.seekX0) / w * v.duration * LIB_SEEK_RATIO));
+    try{ v.currentTime = nt; }catch(_){}
+  }
+});
+window.addEventListener('mouseup', ()=>{
+  const m = libMouse; if(!m) return;
+  libMouse = null; clearTimeout(m.lpTimer);
+  if(m.speeding){ m.v.playbackRate = 1; m.el.classList.remove('speeding'); }
+  if(m.seeking){ m.el.classList.remove('seeking'); hideLibTip(); saveLibProgress(m.el); }
+});
 
 const libItems = () => $$('.lib-item');
 
@@ -638,15 +672,16 @@ async function loadLibrary(reset){
 function renderLibFeed(){
   const feed = $('#libFeed');
   feed.innerHTML = '';
+  feed.classList.toggle('grid', state.lib.mode === 'grid');
   state.lib.items.forEach((it,i)=> feed.appendChild(makeLibItem(it,i)));
   applyLibMuteUI();
-  setupLibObserver();
+  if(state.lib.mode === 'grid') stopLibrary(); else setupLibObserver();
   state.lib.index = 0;
 }
 
 function makeLibItem(it, i){
   const el = document.createElement('div');
-  el.className = 'lib-item paused';
+  el.className = 'lib-item paused' + (it.star ? ' starred' : '');
   el.dataset.i = i;
   el.dataset.path = it.path;
   el.innerHTML = libItemHTML(it);
@@ -659,33 +694,146 @@ function makeLibItem(it, i){
 function libItemHTML(it){
   const resume = it.position > 5
     ? `<span title="上次播放到 ${fmtDur(it.position)}">⏱ 续播 ${fmtDur(it.position)}</span>` : '';
+  const avatar = ((it.cat_label||'库').trim()[0] || '库');
+  const dur = it.duration ? fmtDur(it.duration) : '';
   return `<video src="/api/media/stream?path=${encodeURIComponent(it.path)}"
       preload="none" playsinline webkit-playsinline loop></video>
     <div class="lib-hint">▶</div>
     <div class="lib-burst">♥</div>
+    <div class="lib-seek">
+      <span class="lsk-arrow lsk-back">⏪</span>
+      <span class="lsk-t"><b>00:00</b> / 00:00</span>
+      <span class="lsk-arrow lsk-fwd">⏩</span>
+    </div>
+    <div class="lib-speed"><b>${LIB_SPEED}×</b> 倍速播放中</div>
     <div class="lib-side">
-      <button class="lsb star${it.star?' on':''}" data-act="star" title="收藏（也可双击画面）">♥</button>
-      <button class="lsb" data-act="mute" title="静音 / 取消静音">🔊</button>
-      <button class="lsb" data-act="copy" title="复制原站链接">⧉</button>
-      <button class="lsb del" data-act="del" title="删除文件">⌫</button>
+      <div class="ls-avatar" title="${esc(it.cat_label||'未分类')}">${esc(avatar)}</div>
+      <button class="lsb star${it.star?' on':''}" data-act="star" title="收藏（双击画面也可）"><span class="ls-ic">♥</span><span class="ls-n">收藏</span></button>
+      <button class="lsb" data-act="share" title="复制视频地址"><span class="ls-ic">⤴</span><span class="ls-n">分享</span></button>
+      <button class="lsb" data-act="mute" title="静音 / 取消静音"><span class="ls-ic">🔊</span><span class="ls-n">静音</span></button>
+      <button class="lsb" data-act="open" title="新窗口打开"><span class="ls-ic">⤓</span><span class="ls-n">打开</span></button>
+      <button class="lsb del" data-act="del" title="删除文件"><span class="ls-ic">⋯</span><span class="ls-n">删除</span></button>
     </div>
     <div class="lib-meta">
-      <div class="lm-title">${esc(it.title)}</div>
+      <div class="lm-title">${esc(it.title)}${it.url?` <a class="lm-src" href="${esc(it.url)}" target="_blank" rel="noopener" title="打开来源页面">来源 ↗</a>`:''}</div>
       <div class="lm-sub">
         <b>${esc(it.cat_label||'未分类')}</b>
         <span>${fmtGB(it.size)}</span>
+        ${dur?`<span>⏱ ${dur}</span>`:''}
         <span>🕒 ${fmtTime(it.mtime)}</span>
         ${it.plays?`<span>看过 ${it.plays} 次</span>`:''}
         ${resume}
       </div>
     </div>
-    <div class="lib-prog"><i></i></div>`;
+    <div class="lib-prog">
+      <div class="lp-tip"><b>00:00</b> / 00:00</div>
+      <div class="lp-track"><i></i><b class="lp-knob"></b></div>
+    </div>`;
 }
 
 function bindLibItem(el, v){
   let lastSave = 0;
   let clickTimer = null;
   const itemOf = () => state.lib.items[+el.dataset.i];
+  // ---- 底部进度条：拖动/点击都可调进度（抖音式：拖动时变粗并显示时间气泡）----
+  const prog = el.querySelector('.lib-prog');
+  let progDrag = false;
+  const progSeek = clientX=>{
+    if(!v.duration) return;
+    const r = prog.getBoundingClientRect();
+    const p = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
+    try{ v.currentTime = p * v.duration; }catch(e){}
+    paintLibProg(el, v);   // 拖动时 .lib-prog.drag 会把时间气泡显出来
+  };
+  const progDown = e=>{
+    progDrag = true; prog.classList.add('drag');
+    if(e.pointerId != null && prog.setPointerCapture){ try{ prog.setPointerCapture(e.pointerId); }catch(_){} }
+    progSeek(e.clientX);
+  };
+  const progMove = e=>{ if(progDrag){ e.preventDefault(); progSeek(e.clientX); } };
+  const progUp = ()=>{
+    if(!progDrag) return;
+    progDrag = false; prog.classList.remove('drag');
+    hideLibTip(); saveLibProgress(el);
+  };
+  prog.addEventListener('pointerdown', e=>{
+    if(progDrag) return;
+    if(e.target.closest('.lsb')) return;
+    if(state.lib.mode === 'grid'){ openLibItem(el); return; }
+    progDown(e);
+  });
+  prog.addEventListener('pointermove', progMove);
+  prog.addEventListener('pointerup', progUp);
+  prog.addEventListener('pointercancel', progUp);
+
+  // ---- 长按倍速 + 左右滑动快进 ----
+  let sx=0, sy=0, axis=null, moved=false, seeking=false, seekFrom=0, seekX0=0, lpTimer=null, speeding=false;
+  const startSpeed = ()=>{
+    if(speeding || !v.duration) return;
+    speeding = true; v.playbackRate = LIB_SPEED;
+    el.classList.add('speeding');
+    if(v.paused) v.play().catch(()=>{});
+  };
+  const stopSpeed = ()=>{
+    if(!speeding) return;
+    speeding = false; v.playbackRate = 1; el.classList.remove('speeding');
+  };
+  const beginSeek = x=>{
+    seeking = true; seekX0 = x; seekFrom = v.currentTime || 0;
+    el.classList.add('seeking'); paintLibSeek(el, v, 0);
+  };
+  const endSeek = ()=>{
+    if(!seeking) return;
+    seeking = false; el.classList.remove('seeking'); hideLibTip(); saveLibProgress(el);
+  };
+  el.addEventListener('touchstart', e=>{
+    if(e.touches.length !== 1){ stopSpeed(); return; }
+    if(e.target.closest('.lib-prog') || e.target.closest('.lsb') || e.target.closest('a')) return;
+    const t = e.touches[0];
+    sx = t.clientX; sy = t.clientY; axis = null; moved = false;
+    clearTimeout(lpTimer);
+    lpTimer = setTimeout(()=>{ if(!moved) startSpeed(); }, 300);
+  }, {passive:true});
+  el.addEventListener('touchmove', e=>{
+    if(e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const dx = t.clientX - sx, dy = t.clientY - sy;
+    if(!moved && (Math.abs(dx) > 8 || Math.abs(dy) > 8)){
+      moved = true; clearTimeout(lpTimer); stopSpeed();
+    }
+    if(!axis && (Math.abs(dx) > 12 || Math.abs(dy) > 12)){
+      axis = Math.abs(dx) > Math.abs(dy) * 1.3 ? 'x' : 'y';
+    }
+    if(axis === 'x'){
+      if(e.cancelable) e.preventDefault();      // 拦住横向手势，纵向滚动照常
+      if(!seeking) beginSeek(t.clientX);
+      const w = el.clientWidth || 1;
+      let delta = (t.clientX - seekX0) / w * (v.duration || 0) * LIB_SEEK_RATIO;
+      const nt = Math.max(0, Math.min(v.duration || 0, seekFrom + delta));
+      try{ v.currentTime = nt; }catch(_){}
+    }
+  }, {passive:false});
+  el.addEventListener('touchend', ()=>{
+    clearTimeout(lpTimer); stopSpeed(); endSeek();
+  }, {passive:true});
+  el.addEventListener('touchcancel', ()=>{
+    clearTimeout(lpTimer); stopSpeed(); endSeek();
+  }, {passive:true});
+
+  // 桌面端：按住画面 = 倍速，按住横向拖动 = 快进（走全局控制器，避免每条重复挂监听）
+  el.addEventListener('mousedown', e=>{
+    if(e.button !== 0) return;
+    if(e.target.closest('.lib-prog') || e.target.closest('.lsb') || e.target.closest('a')) return;
+    libMouse = {el, v, sx:e.clientX, sy:e.clientY, axis:null, moved:false,
+                speeding:false, seeking:false, seekFrom:0, seekX0:0, lpTimer:null};
+    libMouse.lpTimer = setTimeout(()=>{
+      if(libMouse && !libMouse.moved && v.duration){
+        libMouse.speeding = true; v.playbackRate = LIB_SPEED;
+        el.classList.add('speeding');
+        if(v.paused) v.play().catch(()=>{});
+      }
+    }, 300);
+  });
 
   v.addEventListener('loadedmetadata', ()=>{
     const it = itemOf(); if(!it) return;
@@ -699,8 +847,8 @@ function bindLibItem(el, v){
     }
   });
   v.addEventListener('timeupdate', ()=>{
-    const bar = el.querySelector('.lib-prog i');
-    if(bar && v.duration) bar.style.width = Math.max(0,Math.min(100, v.currentTime/v.duration*100))+'%';
+    paintLibProg(el, v);
+    if(el.classList.contains('seeking')) paintLibSeek(el, v, v.currentTime - seekFrom);
     const now = Date.now();
     if(now - lastSave > 5000){ lastSave = now; saveLibProgress(el); }
   });
@@ -723,19 +871,61 @@ function bindLibItem(el, v){
       if(v.paused) v.play().catch(()=>{}); else v.pause();
     }, 240);
   });
-  el.querySelector('.lib-prog').addEventListener('click', e=>{
-    if(!v.duration) return;
-    const r = e.currentTarget.getBoundingClientRect();
-    v.currentTime = Math.max(0, Math.min(1, (e.clientX-r.left)/r.width)) * v.duration;
-  });
+  // 网格模式下整块就是「点开这条」
+  el.addEventListener('click', e=>{
+    if(state.lib.mode !== 'grid') return;
+    e.preventDefault(); e.stopPropagation(); openLibItem(el);
+  }, true);
   el.querySelectorAll('.lsb').forEach(b=> b.addEventListener('click', e=>{
     e.stopPropagation();
     const act = b.dataset.act;
     if(act==='star') libStar(el);
     else if(act==='mute') libToggleMute();
-    else if(act==='copy') libCopyLink(el);
+    else if(act==='share') libCopyLink(el);
+    else if(act==='open') libOpen(el);
     else if(act==='del') libDelete(el);
   }));
+}
+
+// ---- 播放中的各种提示与进度条绘制 ----
+function paintLibProg(el, v){
+  const p = (v.duration ? v.currentTime / v.duration : 0) * 100;
+  const fill = el.querySelector('.lp-track i');
+  const knob = el.querySelector('.lp-knob');
+  if(fill) fill.style.width = Math.max(0, Math.min(100, p)) + '%';
+  if(knob) knob.style.left = Math.max(0, Math.min(100, p)) + '%';
+  const tip = el.querySelector('.lp-tip');
+  if(tip) tip.innerHTML = `<b>${fmtDur(v.currentTime)}</b> / ${fmtDur(v.duration||0)}`;
+  const seek = el.querySelector('.lib-seek .lsk-t');
+  if(seek && el.classList.contains('seeking'))
+    seek.innerHTML = `<b>${fmtDur(v.currentTime)}</b> / ${fmtDur(v.duration||0)}`;
+}
+
+function paintLibSeek(el, v, delta){
+  const box = el.querySelector('.lib-seek'); if(!box) return;
+  box.classList.toggle('back', delta < -0.5);
+  box.classList.toggle('fwd', delta > 0.5);
+  const t = box.querySelector('.lsk-t');
+  if(t) t.innerHTML = `<b>${fmtDur(v.currentTime)}</b> / ${fmtDur(v.duration||0)}` +
+    (Math.abs(delta) >= 1 ? ` <em>${delta>0?'+':''}${Math.round(delta)}s</em>` : '');
+}
+
+function showLibTip(text){
+  const t = $('#libTip'); if(!t) return;
+  t.innerHTML = text; t.hidden = false;
+}
+function hideLibTip(){ const t = $('#libTip'); if(t){ t.hidden = true; } }
+
+function libOpen(el){
+  const it = state.lib.items[+el.dataset.i]; if(!it) return;
+  window.open(it.url || ('/api/media/stream?path=' + encodeURIComponent(it.path)), '_blank');
+}
+
+// 网格模式下点一条 → 回到沉浸式并定位到它
+function openLibItem(el){
+  const i = +el.dataset.i;
+  setLibMode('feed');
+  requestAnimationFrame(()=> libScrollTo(i));
 }
 
 // 进入视口的自动播放 / 离开即停：一次只播一个，滑动切换才跟手
@@ -747,6 +937,7 @@ function setupLibObserver(){
       const el = en.target;
       const v = el.querySelector('video');
       if(!v) return;
+      if(state.lib.mode === 'grid'){ if(!v.paused) v.pause(); return; }
       if(en.isIntersecting && en.intersectionRatio >= 0.6){
         state.lib.index = +el.dataset.i;
         v.muted = state.lib.mute;
@@ -768,6 +959,49 @@ function stopLibrary(){
   if(libObs){ libObs.disconnect(); libObs = null; }
 }
 
+// ---- 视图模式：feed（沉浸单条）/ grid（一行三个）----
+function setLibMode(mode, silent){
+  const L = state.lib;
+  L.mode = (mode === 'grid') ? 'grid' : 'feed';
+  localStorage.setItem('twixive.libMode', L.mode);
+  const feed = $('#libFeed');
+  const wrap = $('.lib-wrap');
+  if(feed) feed.classList.toggle('grid', L.mode === 'grid');
+  if(wrap) wrap.classList.toggle('grid', L.mode === 'grid');
+  const btn = $('#libGrid');
+  if(btn){
+    btn.classList.toggle('on', L.mode === 'grid');
+    btn.title = L.mode === 'grid' ? '当前：网格视图（点击回到沉浸播放）' : '当前：沉浸播放（点击切换网格）';
+  }
+  hideLibTip();
+  if(L.mode === 'grid'){
+    stopLibrary();                       // 网格里不自动播放，省带宽
+    if(!silent) toast('网格视图 · 点一条进入全屏，双指张开回沉浸播放');
+  } else {
+    setupLibObserver();
+    if(!silent) toast('沉浸播放 · 双指捏合切换网格');
+  }
+}
+
+// 双指缩放切视图：捏合 → 网格（一行三个），张开 → 沉浸单条
+const pinchDist = ts => {
+  const dx = ts[0].clientX - ts[1].clientX, dy = ts[0].clientY - ts[1].clientY;
+  return Math.hypot(dx, dy) || 1;
+};
+function setupLibPinch(){
+  const wrap = $('.lib-wrap'); if(!wrap) return;
+  wrap.addEventListener('touchstart', e=>{
+    libPinch = (e.touches.length === 2) ? {d: pinchDist(e.touches)} : null;
+  }, {passive:true});
+  wrap.addEventListener('touchmove', e=>{
+    if(e.touches.length !== 2 || !libPinch || !libPinch.d) return;
+    const r = pinchDist(e.touches) / libPinch.d;
+    if(r < 0.75){ libPinch = null; if(state.lib.mode !== 'grid') setLibMode('grid'); }
+    else if(r > 1.35){ libPinch = null; if(state.lib.mode !== 'feed') setLibMode('feed'); }
+  }, {passive:true});
+  wrap.addEventListener('touchend', e=>{ if(e.touches.length < 2) libPinch = null; }, {passive:true});
+}
+
 // 进度落库：离结尾 15 秒内视为看完，归零下次从头播
 function saveLibProgress(el){
   const v = el.querySelector('video');
@@ -785,6 +1019,7 @@ function libStar(el, burst){
   it.star = !it.star;
   const b = el.querySelector('.lsb.star');
   if(b) b.classList.toggle('on', it.star);
+  el.classList.toggle('starred', it.star);
   if(burst && it.star){
     const h = el.querySelector('.lib-burst');
     if(h){ h.classList.add('go'); setTimeout(()=>h.classList.remove('go'), 420); }
@@ -811,7 +1046,11 @@ function applyLibMuteUI(){
   const m = state.lib.mute;
   libItems().forEach(el=>{
     const b = el.querySelector('.lsb[data-act="mute"]');
-    if(b){ b.textContent = m ? '🔇' : '🔊'; b.classList.toggle('on', m); }
+    if(b){
+      const ic = b.querySelector('.ls-ic'); if(ic) ic.textContent = m ? '🔇' : '🔊';
+      const lb = b.querySelector('.ls-n'); if(lb) lb.textContent = m ? '已静音' : '静音';
+      b.classList.toggle('on', m);
+    }
   });
 }
 
@@ -860,12 +1099,14 @@ function libScrollTo(i){
 
 function renderLibCats(){
   const box = $('#libCats'); const L = state.lib;
-  const chips = [{name:'', label:'全部', count:L.all},
-                 {name:'__star__', label:'♥ 收藏', count:L.starCount}]
-    .concat(L.cats.map(c=>({name:c.name, label:c.label, count:c.count})));
+  const chips = [{name:'', label:'全部', count:L.all, main:true},
+                 {name:'__star__', label:'♥ 收藏', count:L.starCount, main:true}]
+    .concat(L.cats.map(c=>({name:c.name, label:c.label, count:c.count, main:false})));
   box.innerHTML = chips.map(c=>{
     const active = c.name === '__star__' ? L.starOnly : (!L.starOnly && L.cat === c.name);
-    return `<button class="lib-cat${active?' active':''}" data-cat="${esc(c.name)}">${esc(c.label)}<span class="lc-n">${c.count}</span></button>`;
+    // minor = 除「全部 / 收藏」以外的分类，手机端顶栏只留前两个
+    const cls = 'lib-cat' + (active ? ' active' : '') + (c.main ? '' : ' minor');
+    return `<button class="${cls}" data-cat="${esc(c.name)}">${esc(c.label)}<span class="lc-n">${c.count}</span></button>`;
   }).join('');
   $$('.lib-cat', box).forEach(b=> b.onclick = ()=>{
     const n = b.dataset.cat;
@@ -887,6 +1128,9 @@ function updateLibEmpty(){
 }
 
 $('#libBack').onclick = ()=> $('.nav[data-view="dashboard"]').click();
+$('#libGrid').onclick = ()=> setLibMode(state.lib.mode === 'grid' ? 'feed' : 'grid');
+setupLibPinch();
+setLibMode(state.lib.mode, true);   // 让按钮 / 容器类名与初始模式一致（初始化时不弹提示）
 $('#libSort').onclick = ()=>{
   const i = LIB_SORTS.findIndex(s=>s[0] === state.lib.sort);
   const nx = LIB_SORTS[(i+1) % LIB_SORTS.length];
@@ -912,6 +1156,19 @@ document.addEventListener('keydown', e=>{
   if(e.key === 'ArrowDown' || e.key === 'ArrowUp'){
     e.preventDefault();
     libScrollTo(state.lib.index + (e.key === 'ArrowDown' ? 1 : -1));
+  } else if(e.key === 'ArrowRight' || e.key === 'ArrowLeft'){
+    const el = libItems()[state.lib.index];
+    const v = el && el.querySelector('video');
+    if(v && v.duration){
+      e.preventDefault();
+      try{ v.currentTime = Math.max(0, Math.min(v.duration,
+        v.currentTime + (e.key === 'ArrowRight' ? 10 : -10))); }catch(_){}
+      showLibTip(fmtDur(v.currentTime) + ' / ' + fmtDur(v.duration));
+      clearTimeout(window.__libTipT);
+      window.__libTipT = setTimeout(hideLibTip, 900);
+    }
+  } else if(e.key === 'g'){
+    setLibMode(state.lib.mode === 'grid' ? 'feed' : 'grid');
   } else if(e.key === ' '){
     e.preventDefault();
     const el = libItems()[state.lib.index];
