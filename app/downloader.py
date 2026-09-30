@@ -62,6 +62,12 @@ def _note_proxy_success():
         _PROXY_PAUSE_UNTIL = 0.0
 
 
+def clear_proxy_breaker():
+    """手动解除熔断（例如用户把代理总开关关掉、或换了新代理地址时）。"""
+    _note_proxy_success()
+    _TASK_PROXY_ERR.clear()
+
+
 def _take_proxy_error(tid):
     """取出并清除该任务的「代理错误」标记。"""
     if tid in _TASK_PROXY_ERR:
@@ -77,20 +83,27 @@ def proxy_pause_remaining():
 
 
 def proxy_status():
+    en = bool(db.get_settings().get("proxy_enabled", True))
+    # 开关关掉后不该再显示「熔断暂停」：此时根本没有走代理，暂停也没有意义
+    if not en:
+        return {"paused": False, "remaining": 0, "enabled": False,
+                "fails": _PROXY_FAIL, "message": "代理开关已关闭，当前直连"}
     left = proxy_pause_remaining()
     return {"paused": left > 0, "remaining": int(left),
-            "fails": _PROXY_FAIL,
+            "enabled": True, "fails": _PROXY_FAIL,
             "message": ("代理不可用，已自动暂停，%d 秒后重试" % int(left)) if left > 0
-                       else ("代理正常" if config.get_proxy_dict() else "未启用代理")}
+                       else ("代理正常" if config.get_proxy_dict() else "代理已开启但未填地址")}
 
 
 def test_proxy():
     """服务端自检：用当前代理真连一次，并与直连对比，结果全中文。"""
     proxies = config.get_proxy_dict()
-    url = (db.get_settings().get("proxy_url") or "").strip()
+    s = db.get_settings()
+    enabled = bool(s.get("proxy_enabled", True))
+    url = (s.get("proxy_url") or "").strip()
     target = "https://twixive.net/"
-    out = {"configured": bool(proxies), "proxy": url, "target": target,
-           "ok": False, "ms": 0, "message": "", "direct": None}
+    out = {"configured": bool(proxies), "enabled": enabled, "proxy": url,
+           "target": target, "ok": False, "ms": 0, "message": "", "direct": None}
 
     def probe(p):
         t0 = time.time()
@@ -115,8 +128,12 @@ def test_proxy():
     else:
         r = probe(None)
         out["ms"], out["ok"] = r["ms"], r["ok"]
-        out["message"] = ("未配置代理，直连可用（耗时 %d ms）" % r["ms"]) if r["ok"] \
-            else ("未配置代理，且直连失败：%s" % r.get("error"))
+        if not enabled:
+            out["message"] = ("代理总开关已关闭，当前走直连（直连%s，耗时 %d ms）"
+                              % ("可用" if r["ok"] else "失败", r["ms"]))
+        else:
+            out["message"] = ("未配置代理，直连可用（耗时 %d ms）" % r["ms"]) if r["ok"] \
+                else ("未配置代理，且直连失败：%s" % r.get("error"))
 
     # 直连对照组，便于判断"是代理的问题还是网络的问题"
     d = probe(None)
@@ -332,6 +349,8 @@ class DownloadManager:
         rel = sanitize_filename(title, category, guessed, uid)
         full = os.path.join(s["download_path"], rel)
         os.makedirs(os.path.dirname(full) or ".", exist_ok=True)
+        # 提前把落盘路径写库：这样下载中途取消/删除任务时也能定位并清掉半成品文件
+        db.update_task(tid, path=rel)
 
         # 断点续传：已存在的半成品文件作为起点
         resume = os.path.getsize(full) if os.path.exists(full) else 0

@@ -6,8 +6,14 @@ from . import db
 
 
 def get_proxy_dict():
-    """根据设置返回 requests 用的 proxies 字典；未配置则返回 None。"""
+    """根据设置返回 requests 用的 proxies 字典；未配置或总开关关闭则返回 None。
+
+    总开关（settings.proxy_enabled）关闭时，即使填了地址也一律直连 —— 方便
+    代理临时挂掉时一键切直连，不用把地址删掉再重填。
+    """
     s = db.get_settings()
+    if not s.get("proxy_enabled", True):
+        return None
     url = (s.get("proxy_url") or "").strip()
     if not url:
         return None

@@ -85,17 +85,29 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Micr
   border-radius:20px;padding:2px 9px;font-weight:600}
 
 /* ===== 统计卡 ===== */
-.stats{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:18px}
+.stats{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:18px}
 .stat{position:relative;overflow:hidden;background:linear-gradient(160deg,var(--panel-2),var(--panel));
-  border:1px solid var(--line);border-radius:16px;padding:16px 16px 14px;box-shadow:var(--shadow-sm);transition:.18s}
+  border:1px solid var(--line);border-radius:16px;padding:15px 15px 13px;box-shadow:var(--shadow-sm);transition:.18s}
 .stat:hover{transform:translateY(-2px);border-color:rgba(124,92,255,.45)}
 .stat::after{content:"";position:absolute;right:-24px;top:-24px;width:88px;height:88px;border-radius:50%;
   background:radial-gradient(circle,rgba(124,92,255,.30),transparent 70%)}
-.stat .ic{position:absolute;right:14px;top:12px;font-size:15px;opacity:.5}
-.stat .n{font-size:27px;font-weight:800;letter-spacing:.5px;line-height:1.1}
-.stat .l{color:var(--muted);font-size:12px;margin-top:5px}
+.stat .ic{position:absolute;right:13px;top:11px;font-size:15px;opacity:.5}
+.stat .n{font-size:25px;font-weight:800;letter-spacing:.3px;line-height:1.1;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.stat .l{color:var(--muted);font-size:11.5px;margin-top:5px;line-height:1.5}
 .stat.s1 .n{color:var(--warn)} .stat.s2 .n{color:var(--accent-2)}
 .stat.s3 .n{color:var(--ok)} .stat.s4 .n{color:var(--err)} .stat.s5 .n{color:var(--accent)}
+/* 存储占用卡：数值偏长（如 47.5 GB），字号略小 */
+.stat.s6 .n{color:#38bdf8;font-size:21px}
+.stat.s6::after{background:radial-gradient(circle,rgba(56,189,248,.28),transparent 70%)}
+
+/* 行内小开关（设置页「启用代理」/ 任务页「同时删源文件」） */
+.sw-inline{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted);
+  cursor:pointer;user-select:none;border:1px solid var(--line);background:var(--panel-3);
+  border-radius:11px;padding:7px 11px;transition:.16s;white-space:nowrap}
+.sw-inline:hover{border-color:var(--accent);color:var(--txt)}
+.sw-inline input{width:16px;height:16px;accent-color:var(--accent);cursor:pointer;margin:0}
+.sw-inline .sw-txt{font-weight:600}
 
 /* ===== tab 通用 ===== */
 .source-tabs{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap}
@@ -219,6 +231,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Micr
   background:var(--panel-3);border:1px solid var(--line-soft);border-radius:12px;transition:.16s}
 .mon-row:hover{border-color:rgba(124,92,255,.4)}
 .mon-row .mr-name{flex:1;font-weight:600;color:var(--txt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 监控行右侧的来源标记（同名分类可能属于不同来源） */
+.mon-row .src{flex:none;font-size:10px;font-weight:700;letter-spacing:.2px;padding:2px 7px;border-radius:20px;
+  color:var(--accent-2);background:rgba(34,211,238,.10);border:1px solid rgba(34,211,238,.32)}
+.mon-row .src.warn{color:var(--warn);background:rgba(251,191,36,.10);border-color:rgba(251,191,36,.35)}
 /* 雷达扫描动画 */
 .radar{position:relative;flex:none;width:14px;height:14px;border-radius:50%;
   border:2px solid var(--accent)}

@@ -21,6 +21,7 @@ _lock = threading.Lock()
 # ---- 默认设置 ----
 DEFAULT_SETTINGS = {
     "proxy_url": "",            # 例: http://127.0.0.1:7890 或 socks5://127.0.0.1:1080
+    "proxy_enabled": True,      # 代理总开关：关闭后即使填了地址也全部走直连
     "download_path": os.path.join(DATA_DIR, "downloads"),
     "concurrent": 3,            # 同时下载数
     "rate_delay": 2.0,          # 每个请求之间的礼貌延时(秒)
@@ -192,6 +193,40 @@ def set_monitored_by_name(name, monitored):
                          VALUES(?,?,?,?,?)""",
                       (_cat_id(name), name, 1, _now(), int(bool(monitored))))
     return list_categories()
+
+
+def list_monitored():
+    """所有处于监控中的分类（**跨来源**）。
+
+    控制台「监控中分类」必须用这个而不是当前来源的分类列表：监控状态是按
+    分类名存在库里的，而分类名属于不同来源（twixive 的 /new、twivideo 的
+    ranking_24h…）。只看当前来源会把别的来源正在监控的分类漏掉 —— 表现就是
+    「明明监控了 8 个，控制台只显示 5 个」。
+    """
+    with _lock, sqlite3.connect(DB_PATH) as c:
+        rows = c.execute("SELECT id, name, monitored, last_checked FROM categories "
+                         "WHERE monitored=1 ORDER BY name").fetchall()
+    return [{"id": r[0], "name": r[1], "monitored": bool(r[2]),
+             "last_checked": r[3]} for r in rows]
+
+
+def category_names():
+    """库里出现过的全部分类名（用于把监听的分类名解析回中文名）。"""
+    with _lock, sqlite3.connect(DB_PATH) as c:
+        rows = c.execute("SELECT name FROM categories").fetchall()
+    return [r[0] for r in rows]
+
+
+def files_of_finished():
+    """返回所有「已结束」任务的落盘相对路径（用于连带删除源文件）。
+
+    只取记录了 path 的任务；等待中/下载中的文件由下载线程持有，不在此列。
+    """
+    with _lock, sqlite3.connect(DB_PATH) as c:
+        rows = c.execute("SELECT id, path FROM tasks WHERE status IN "
+                         "('done','error','cancelled','skipped') "
+                         "AND path IS NOT NULL AND path<>''").fetchall()
+    return [{"id": r[0], "path": r[1]} for r in rows]
 
 
 # ---- tasks ----

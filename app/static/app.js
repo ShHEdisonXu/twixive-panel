@@ -3,6 +3,14 @@ const $$ = (s, r=document) => [...r.querySelectorAll(s)];
 const api = (p, opt={}) => fetch('/api'+p, Object.assign({headers:{'Content-Type':'application/json'}}, opt))
   .then(r=> r.json());
 const fmtSize = b => b>1048576 ? (b/1048576).toFixed(1)+' MB' : b>1024 ? (b/1024).toFixed(0)+' KB' : (b||0)+' B';
+// 大容量显示（总占用/磁盘剩余用），自动升到 GB / TB
+const fmtGB = b => {
+  b = b||0;
+  if(b>=1099511627776) return (b/1099511627776).toFixed(2)+' TB';
+  if(b>=1073741824) return (b/1073741824).toFixed(1)+' GB';
+  if(b>=1048576) return (b/1048576).toFixed(0)+' MB';
+  return fmtSize(b);
+};
 const fmtSpeed = b => !b ? '0 KB/s' : b>=1048576 ? (b/1048576).toFixed(2)+' MB/s' : (b/1024).toFixed(0)+' KB/s';
 const esc = s => (s||'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 // 触发下载时间：今天只显示时分，跨天显示 月-日 时:分
@@ -21,12 +29,15 @@ const fmtTime = iso => {
 const PAGE_SIZES = [];
 for(let n=100; n<=1000; n+=50) PAGE_SIZES.push(n);
 
+// 删除任务时是否连带删除源文件（默认开）
+const PURGE_KEY = 'twixive.purgeFiles';
 let state = {
   source: null, sources: [],
   cats: [], activeGroup: null, activeLeaf: null,
   videos: [], page:1, has_more:false, loading:false, pageSize:100, rawFetched:0,
   tasks: [], taskFilter:'all',
-  settings: {}, monitored: [],
+  settings: {}, monitors: [], storage: {},
+  purge: localStorage.getItem(PURGE_KEY) !== '0',
   knownUrls: new Set()   // 已存在/已入队过的视频地址，用于自动跳过重复
 };
 let booted = false;
@@ -53,6 +64,7 @@ $$('[data-goto]').forEach(a=>a.onclick=()=>$('.nav[data-view="'+a.dataset.goto+'
 // ---- 初始化 ----
 async function init(){
   buildPageSize();
+  initPurgeToggle();
   try{ state.settings = await api('/settings'); }catch(e){ return; }
   state.pageSize = +state.settings.page_size || 100;
   $('#pageSize').value = String(state.pageSize);
@@ -60,9 +72,16 @@ async function init(){
   state.source = state.settings.source || 'twixive';
   state.sources = await api('/sources');
   await loadCats();
+  await loadMonitors(false);
+  await loadStorage(false);
   await loadTasks();
   if(!booted){ setInterval(loadTasks, 2500); booted=true; }
   updateProxyChip();
+}
+function initPurgeToggle(){
+  const cb=$('#purgeFiles'); if(!cb) return;
+  cb.checked = state.purge;
+  cb.onchange = ()=>{ state.purge = cb.checked; localStorage.setItem(PURGE_KEY, cb.checked?'1':'0'); };
 }
 function buildPageSize(){
   const sel=$('#pageSize'); sel.innerHTML='';
@@ -80,19 +99,28 @@ function buildPageSize(){
 }
 function updateProxyChip(){
   const p=state.settings.proxy_url;
+  const on=state.settings.proxy_enabled!==false;
   const chip=$('#proxyChip');
-  $('#proxyText').textContent = p ? ('代理: '+p) : '代理未配置';
-  chip.classList.toggle('on', !!p);
+  let text;
+  if(!on) text = '代理已关闭（走直连）';
+  else text = p ? ('代理: '+p) : '代理未开启（未填地址）';
+  $('#proxyText').textContent = text;
+  chip.classList.toggle('on', on && !!p);
   const dm=$('#proxyDotMobile');
-  if(dm){ dm.className='chip-dot'+(p?' on':''); dm.title = p? ('代理: '+p) : '代理未配置'; }
+  if(dm){ dm.className='chip-dot'+((on&&p)?' on':''); dm.title = text; }
+  // 关闭时把地址输入框置灰，示意当前不生效（地址保留不清空）
+  const inp=$('#proxy_url');
+  if(inp){ inp.disabled = !on; inp.style.opacity = on?'1':'.5'; }
 }
 function fillSettings(){
   const s=state.settings;
   $('#proxy_url').value=s.proxy_url||'';
+  const pe=$('#proxy_enabled'); if(pe) pe.checked = s.proxy_enabled!==false;
   $('#concurrent').value=s.concurrent??3; $('#rate_delay').value=s.rate_delay??2;
   $('#retry_times').value=s.retry_times??2; $('#max_size_mb').value=s.max_size_mb??0;
   $('#download_path').value=s.download_path||'';
   $('#auto_enabled').checked=!!s.auto_enabled; $('#auto_interval').value=s.auto_interval??60;
+  updateProxyChip();
 }
 
 // ---- 来源大 tab ----
@@ -113,7 +141,9 @@ async function selectSource(key){
   state.settings.source=key;
   renderSourceTabs();
   await loadCats();
+  await loadMonitors(false);   // 监控列表是跨来源的，切换来源后重新拉一次
   renderTray();
+  renderDashboard(state.tasks);
   toast('已切换到 '+key);
 }
 
@@ -165,11 +195,13 @@ function selectLeaf(name){
 async function toggleMonitor(name, monitored){
   await api('/categories/monitor',{method:'POST',body:JSON.stringify({name,monitored})});
   const c=state.cats.find(x=>x.name===name); if(c) c.monitored=monitored;
+  await loadMonitors(false);          // 控制台按「跨来源」全量刷新
   renderCatTabs();
   renderDashboard(state.tasks);
-  loadTasks();
-  toast(monitored? ('已开启监控：'+(c?(c.label||c.name):name)+'，有新视频会自动下载')
-                 : ('已关闭监控：'+(c?(c.label||c.name):name)));
+  const label = c ? (c.label||c.name)
+    : ((state.monitors.find(m=>m.name===name)||{}).label || name);
+  toast(monitored? ('已开启监控：'+label+'，有新视频会自动下载')
+                 : ('已关闭监控：'+label));
 }
 async function fetchVideos(name, page=1, append=false){
   if(state.loading) return;
@@ -280,14 +312,35 @@ let _proxyTick = 0;
 async function loadTasks(){
   state.tasks = await api('/tasks');
   state.knownUrls = new Set(state.tasks.map(t=>t.url).filter(Boolean));
+  const tick = _proxyTick++;
+  // 代理熔断状态每 2 轮查一次（约 5 秒）
+  if((tick % 2)===0){
+    try{ state.proxy = await api('/proxy/status'); }catch(e){ /* 忽略 */ }
+  }
+  // 监控列表每 4 轮（约 10 秒）、磁盘占用每 12 轮（约 30 秒）刷新一次，
+  // 后端这两项各自有缓存，不会给服务端造成负担
+  if((tick % 4)===0) await loadMonitors(false);
+  if((tick % 12)===0) await loadStorage(false);
   renderDashboard(state.tasks);
   renderTaskList(state.tasks);
   updateNavBadges(state.tasks);
-  // 代理熔断状态每 2 轮查一次（约 5 秒）
-  if((_proxyTick++ % 2)===0){
-    try{ state.proxy = await api('/proxy/status'); }catch(e){ /* 忽略 */ }
-  }
   updateHud(state.tasks);
+}
+
+// ---- 监控中分类（跨来源全量）----
+async function loadMonitors(rerender=true){
+  try{ state.monitors = await api('/monitors'); }
+  catch(e){ state.monitors = []; }
+  if(rerender) renderDashboard(state.tasks);
+  return state.monitors;
+}
+
+// ---- 下载占用统计 ----
+async function loadStorage(rerender=true){
+  try{ state.storage = await api('/storage'); }
+  catch(e){ state.storage = {}; }
+  if(rerender) renderDashboard(state.tasks);
+  return state.storage;
 }
 
 // ---- 导航栏数量角标 ----
@@ -339,10 +392,11 @@ function updateHud(tasks){
   }
   hud.classList.remove('err');
   hud.classList.toggle('idle', dl.length===0);
+  const direct = ps.enabled===false;
   $('#hudSpeed').textContent = dl.length ? fmtSpeed(sp) : '空闲';
   $('#hudInfo').textContent = dl.length
-    ? `下载中 ${dl.length} · 等待 ${pend}` + (err? ` · 失败 ${err}`:'')
-    : (pend ? `等待中 ${pend} 个任务` : (err? `失败 ${err} 个待重试` : '当前没有下载任务'));
+    ? `下载中 ${dl.length} · 等待 ${pend}` + (err? ` · 失败 ${err}`:'') + (direct? ' · 直连':'')
+    : (pend ? `等待中 ${pend} 个任务` : (err? `失败 ${err} 个待重试` : (direct? '当前没有下载任务（直连模式）' : '当前没有下载任务')));
   const avg = dl.length ? dl.reduce((a,t)=>a+(t.progress||0),0)/dl.length : 0;
   $('#hudBar').style.width = Math.max(0,Math.min(100,avg))+'%';
 }
@@ -392,6 +446,8 @@ function taskRow(t){
   const cancel = (t.status==='pending'||t.status==='downloading') ? '<button data-act="cancel">取消</button>' : '';
   const mon = t.monitored ? '<span class="badge mon-b" title="来自监控中的分类">📡 监控</span>' : '';
   const tm = '<span class="mc ttime" title="触发下载时间">🕒 '+fmtTime(t.created_at)+'</span>';
+  const delTitle = (state.purge && t.path) ? '删除任务，并删除源文件（不可恢复）' : '只删除任务记录';
+  const delTxt = (state.purge && t.path) ? '删除+文件' : '删除';
   return `<div class="task ${cls}" data-id="${t.id}">
     <div class="ic">${ic}</div>
     ${thumb}
@@ -403,7 +459,7 @@ function taskRow(t){
     <div class="acts">
       <button data-act="preview" title="预览">▶</button>
       ${retry}${cancel}
-      <button data-act="del">删除</button>
+      <button data-act="del" title="${delTitle}">${delTxt}</button>
     </div></div>`;
 }
 function bindTaskActs(scope){
@@ -411,15 +467,39 @@ function bindTaskActs(scope){
     const id=row.dataset.id;
     row.querySelectorAll('[data-act]').forEach(b=>b.onclick=async()=>{
       const act=b.dataset.act;
-      if(act==='cancel') await api('/tasks/'+id+'/cancel',{method:'POST'});
-      else if(act==='del') await api('/tasks/'+id,{method:'DELETE'});
-      else if(act==='retry') await api('/tasks/'+id+'/retry',{method:'POST'});
-      else if(act==='preview'){ const t=state.tasks.find(x=>x.id===id); if(t) openPreview(t); return; }
+      if(act==='cancel'){ await api('/tasks/'+id+'/cancel',{method:'POST'}); loadTasks(); return; }
+      if(act==='retry'){ await api('/tasks/'+id+'/retry',{method:'POST'}); loadTasks(); return; }
+      if(act==='preview'){ const t=state.tasks.find(x=>x.id===id); if(t) openPreview(t); return; }
+      if(act==='del'){
+        const t=state.tasks.find(x=>x.id===id)||{};
+        const hasFile=!!t.path;
+        if(state.purge && hasFile){
+          // 源文件删了就找不回来，动手前必须确认一次
+          if(!confirm('删除任务「'+(t.title||'')+'」\n并删除源文件（'+(t.size?fmtSize(t.size):'文件')+'）？\n\n文件删除不可恢复。若只想删记录，先取消勾选「删除时同时删源文件」。')) return;
+        }
+        const r=await api('/tasks/'+id+(state.purge?'?purge=1':''),{method:'DELETE'});
+        toast(state.purge&&r.freed? ('已删除任务，释放 '+fmtGB(r.freed)) : '已删除任务记录');
+        loadStorage(false);
+        loadTasks();
+        return;
+      }
       loadTasks();
     });
   });
 }
-$('#btnClear').onclick=async()=>{ await api('/tasks/clear',{method:'POST'}); loadTasks(); };
+$('#btnClear').onclick=async()=>{
+  const done=state.tasks.filter(t=>['done','error','cancelled','skipped'].includes(t.status));
+  if(!done.length){ toast('没有可清除的任务'); return; }
+  let purge=state.purge;
+  if(purge){
+    const sz=done.reduce((a,t)=>a+(t.size||0),0);
+    if(!confirm('清除 '+done.length+' 条已结束任务，并删除它们的源文件（约 '+fmtGB(sz)+'）？\n\n文件删除不可恢复。')) return;
+  }
+  const r=await api('/tasks/clear'+(purge?'?purge=1':''),{method:'POST'});
+  toast('已清除 '+done.length+' 条'+(r.freed?('，释放 '+fmtGB(r.freed)):''));
+  loadStorage(false);
+  loadTasks();
+};
 $('#btnRetryFailed').onclick = retryFailed;
 $('#btnRetryFailed2').onclick = retryFailed;
 async function retryFailed(){
@@ -432,13 +512,22 @@ $('#btnAutoRun').onclick=async()=>{ const r=await api('/auto/run',{method:'POST'
 function renderDashboard(tasks){
   const c={pending:0,downloading:0,done:0,error:0,skipped:0};
   tasks.forEach(t=>{ if(c[t.status]!=null)c[t.status]++; });
-  const mon = state.cats.filter(x=>x.monitored).length;
+  const mon = state.monitors.length;
+  // 存储占用（后端扫盘统计，30s 缓存）
+  const sto = state.storage || {};
+  const disk = sto.disk || {};
+  const storeTxt = (sto.bytes!=null) ? fmtGB(sto.bytes) : '—';
+  const storeSub = (sto.bytes!=null)
+    ? `${sto.files||0} 个文件` + (disk.free!=null? ` · 剩余 ${fmtGB(disk.free)}` : '')
+    : '读取中…';
   $('#stats').innerHTML=`
     <div class="stat s1"><div class="ic">⏳</div><div class="n">${c.pending}</div><div class="l">等待中</div></div>
     <div class="stat s2"><div class="ic">⬇</div><div class="n">${c.downloading}</div><div class="l">下载中</div></div>
     <div class="stat s3"><div class="ic">✅</div><div class="n">${c.done}</div><div class="l">已完成</div></div>
     <div class="stat s4"><div class="ic">⚠️</div><div class="n">${c.error}</div><div class="l">失败</div></div>
-    <div class="stat s5"><div class="ic">📡</div><div class="n">${mon}</div><div class="l">监控中分类</div></div>`;
+    <div class="stat s5"><div class="ic">📡</div><div class="n">${mon}</div><div class="l">监控中分类</div></div>
+    <div class="stat s6" title="下载目录 ${esc(sto.path||'')} 的真实磁盘占用${disk.total!=null?(' · 磁盘共 '+fmtGB(disk.total)):''}">
+      <div class="ic">💾</div><div class="n">${storeTxt}</div><div class="l">总占用 · ${storeSub}</div></div>`;
   // 实时动态
   const feed=tasks.slice(0,12);
   $('#feedCount').textContent = feed.length+' 条';
@@ -451,12 +540,15 @@ function renderDashboard(tasks){
       <span class="fm">${esc(catLabel(t.category))}</span>
       <span class="ftime" title="触发时间">🕒 ${fmtTime(t.created_at)}</span></div>`;
   }).join('') : '<p class="empty">暂无动态</p>';
-  // 监控中分类（这里也能直接关掉）
-  const monList = state.cats.filter(x=>x.monitored);
+  // 监控中分类（跨来源全量；这里也能直接关掉）
+  const monList = state.monitors || [];
+  const monTag = $('#monCount'); if(monTag) monTag.textContent = monList.length ? monList.length+' 个' : '';
   $('#monList').innerHTML = monList.length? monList.map(c=>`
     <div class="mon-row">
       <span class="radar" aria-hidden="true"></span>
       <span class="mr-name">${esc(c.label||c.name)}</span>
+      ${c.source?`<span class="src" title="所属来源">${esc(c.source==='twivideo'?'TwiVideo':'TwiXive')}</span>`:''}
+      ${c.known===false?'<span class="src warn" title="该分类已不在来源的当前分类列表里（旧版命名），仍会继续监控">旧</span>':''}
       <span class="sw on" role="switch" aria-checked="true" data-mon="${esc(c.name)}"
             title="点击取消监控"><i></i></span>
     </div>`).join('') : '<p class="empty">暂无监控，去「分类下载」打开分类右侧的开关</p>';
@@ -492,13 +584,23 @@ $$('#previewModal [data-close]').forEach(x=>x.onclick=()=>{
 $('#btnSaveSettings').onclick=async()=>{
   const patch={
     proxy_url:$('#proxy_url').value.trim(),
+    proxy_enabled:$('#proxy_enabled').checked,
     concurrent:+$('#concurrent').value||1, rate_delay:+$('#rate_delay').value||0,
     retry_times:+$('#retry_times').value||0, max_size_mb:+$('#max_size_mb').value||0,
     auto_enabled:$('#auto_enabled').checked, auto_interval:+$('#auto_interval').value||60
   };
   state.settings=await api('/settings',{method:'POST',body:JSON.stringify(patch)});
   updateProxyChip();
+  updateHud(state.tasks);
   toast('设置已保存');
+};
+// 代理总开关：改完立刻生效，不必再去点「保存设置」
+$('#proxy_enabled').onchange=async()=>{
+  const on=$('#proxy_enabled').checked;
+  state.settings=await api('/settings',{method:'POST',body:JSON.stringify({proxy_enabled:on})});
+  updateProxyChip();
+  updateHud(state.tasks);
+  toast(on? '代理已启用（抓取与下载走代理）' : '代理已关闭，全部走直连');
 };
 
 // ---- 代理连通性自检（从面板所在机器发起，结果最准）----
