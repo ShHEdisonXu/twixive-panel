@@ -603,6 +603,7 @@ const LIB_SORTS = [['time','时间 ↓'],['size','大小 ↓'],['name','名称 �
 const LIB_SPEED = 3;        // 长按倍速（抖音同款 3×）
 const LIB_SEEK_RATIO = 0.6; // 画面上横向划过整屏 ≈ 快进总时长的 60%
 const LIB_PROG_RATIO = 1;   // 进度条上横向拖过整条 ≈ 走完整段视频（相对位移，不跟手指绝对位置）
+const LIB_PRELOAD_AHEAD = 2; // 预加载：当前 + 前 1 + 后 2 条，滑到下一条即时播放不卡
 let libObs = null;
 let libMouse = null;        // 桌面端「按住倍速 / 横向拖动快进」的当前会话
 
@@ -765,18 +766,19 @@ function bindLibItem(el, v){
     progDrag = true; progMoved = false;
     progX0 = e.clientX; progFrom = v.currentTime || 0; progTarget = progFrom;
     clearTimeout(progTipT);
-    prog.classList.add('drag');
-    progWasPlaying = !v.paused;
-    if(progWasPlaying) v.pause();        // 拖动时画面定格，跟抖音一致
-    paintLibProg(el, v);
     if(e.pointerId != null && prog.setPointerCapture){ try{ prog.setPointerCapture(e.pointerId); }catch(_){} }
   };
   const progMove = e=>{
     if(!progDrag || !v.duration) return;
-    e.preventDefault();
     const dx = e.clientX - progX0;
     if(!progMoved && Math.abs(dx) < 5) return;   // 轻微抖动不算拖动
-    progMoved = true;
+    if(!progMoved){
+      progMoved = true;
+      progWasPlaying = !v.paused;
+      if(progWasPlaying) v.pause();        // 真正开始拖动才定格，跟抖音一致
+      prog.classList.add('drag');
+    }
+    e.preventDefault();
     const w = prog.getBoundingClientRect().width || 1;
     const delta = dx / w * v.duration * LIB_PROG_RATIO;
     progTarget = Math.max(0, Math.min(v.duration, progFrom + delta));
@@ -793,10 +795,9 @@ function bindLibItem(el, v){
       prog.classList.remove('drag');
       if(progWasPlaying) v.play().catch(()=> el.classList.add('paused'));
     } else {
-      // 只是点了一下：不跳转，只把时间气泡显示片刻（避免误触把进度跳飞）
-      paintLibProg(el, v);
-      progTipT = setTimeout(()=> prog.classList.remove('drag'), 900);
-      if(progWasPlaying) v.play().catch(()=> el.classList.add('paused'));
+      // 点了一下进度条 = 进入全屏（下部分点一下就全屏）
+      prog.classList.remove('drag');
+      toggleLibFullscreen(el);
     }
   };
   prog.addEventListener('pointerdown', e=>{
@@ -905,12 +906,16 @@ function bindLibItem(el, v){
   });
   v.addEventListener('pause', ()=>{ el.classList.add('paused'); saveLibProgress(el); });
 
-  // 单击暂停/播放，240ms 内的第二次点击算双击收藏
-  v.addEventListener('click', ()=>{
+  // 单击：下部分（底部 28%）点一下 = 全屏；其余区域 = 播放/暂停；240ms 内第二次点击 = 收藏
+  el.addEventListener('click', e=>{
+    if(e.target.closest('.lsb') || e.target.closest('a') || e.target.closest('.lp-track')) return;
+    const r = el.getBoundingClientRect();
+    const inBottom = ((e.clientY - r.top) / (r.height || 1)) > 0.72;
     if(clickTimer){ clearTimeout(clickTimer); clickTimer = null; libStar(el, true); return; }
     clickTimer = setTimeout(()=>{
       clickTimer = null;
-      if(v.paused) v.play().catch(()=>{}); else v.pause();
+      if(inBottom) toggleLibFullscreen(el);
+      else { if(v.paused) v.play().catch(()=>{}); else v.pause(); }
     }, 240);
   });
   el.querySelectorAll('.lsb').forEach(b=> b.addEventListener('click', e=>{
@@ -958,6 +963,26 @@ function libOpen(el){
   window.open(it.url || ('/api/media/stream?path=' + encodeURIComponent(it.path)), '_blank');
 }
 
+// 全屏：优先 requestFullscreen 保住自定义 UI（进度条/侧栏）；iOS Safari 退化到原生视频全屏
+function toggleLibFullscreen(el){
+  const v = el.querySelector('video');
+  const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+  if(fsEl){
+    const exit = document.exitFullscreen || document.webkitExitFullscreen;
+    if(exit) exit.call(document).catch(()=>{});
+    return;
+  }
+  const req = el.requestFullscreen || el.webkitRequestFullscreen;
+  if(req){
+    const p = req.call(el);
+    if(p && p.catch) p.catch(()=>{ if(v.webkitEnterFullscreen) v.webkitEnterFullscreen(); });
+  } else if(v.webkitEnterFullscreen){
+    v.webkitEnterFullscreen();
+  } else {
+    toast('当前浏览器不支持全屏');
+  }
+}
+
 // 进入视口的自动播放 / 离开即停：一次只播一个，滑动切换才跟手
 function setupLibObserver(){
   if(libObs) libObs.disconnect();
@@ -968,7 +993,8 @@ function setupLibObserver(){
       const v = el.querySelector('video');
       if(!v) return;
       if(en.isIntersecting && en.intersectionRatio >= 0.6){
-        state.lib.index = +el.dataset.i;
+        const ni = +el.dataset.i;
+        if(ni !== state.lib.index){ state.lib.index = ni; refreshPreload(ni); }
         v.muted = state.lib.mute;
         const p = v.play();
         if(p && p.catch) p.catch(()=> el.classList.add('paused'));
@@ -978,6 +1004,7 @@ function setupLibObserver(){
     });
   }, {root: feed, threshold: [0.35, 0.6, 0.9]});
   libItems().forEach(el=> libObs.observe(el));
+  refreshPreload(state.lib.index);   // 首屏就把前后几条暖好
 }
 
 function stopLibrary(){
@@ -986,6 +1013,31 @@ function stopLibrary(){
     if(v && !v.paused) v.pause();
   });
   if(libObs){ libObs.disconnect(); libObs = null; }
+}
+
+// 预加载：把当前条前后几条视频的缓冲先暖起来，滑动切换时才能即时播放
+// 仅在窗口内（前 1 + 当前 + 后 2）设为 auto 并触发 load()；窗口外的设为 none 省带宽
+let _preloadKey = '';
+function refreshPreload(i){
+  const arr = libItems();
+  if(!arr.length) return;
+  const lo = Math.max(0, i - 1);
+  const hi = Math.min(arr.length - 1, i + LIB_PRELOAD_AHEAD);
+  const key = lo + '-' + hi;
+  if(key === _preloadKey) return;     // 窗口没变就不动，避免反复 load 浪费流量
+  _preloadKey = key;
+  arr.forEach((el, idx)=>{
+    const v = el.querySelector('video');
+    if(!v) return;
+    if(idx >= lo && idx <= hi){
+      if(v.preload !== 'auto') v.preload = 'auto';
+      if(v.readyState < 1){ try{ v.load(); }catch(e){} }   // 还没加载过的才暖缓冲
+      el.classList.add('preloading');
+    } else {
+      if(v.preload !== 'none') v.preload = 'none';
+      el.classList.remove('preloading');
+    }
+  });
 }
 
 // 进度落库：离结尾 15 秒内视为看完，归零下次从头播
