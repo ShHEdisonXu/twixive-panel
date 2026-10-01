@@ -69,7 +69,7 @@
       </header>
       <div class="stats" id="stats"></div>
       <div class="dash-grid">
-        <div class="card span2">
+        <div class="card">
           <div class="card-h"><h3>📡 实时动态</h3><span class="tag" id="feedCount"></span></div>
           <div id="liveFeed" class="feed"></div>
         </div>
@@ -77,13 +77,19 @@
           <div class="card-h"><h3>📡 监控中分类</h3><span class="tag" id="monCount"></span></div>
           <div id="monList" class="mon-list"></div>
         </div>
-        <div class="card span3">
-          <div class="card-h"><h3>⬇ 正在下载</h3><a class="link" data-goto="downloads">前往下载任务 →</a></div>
-          <div id="dlNow" class="mini-list"></div>
-        </div>
-        <div class="card span3">
-          <div class="card-h"><h3>⚠️ 失败待重试</h3><button class="btn ghost sm" id="btnRetryFailed">一键重试失败</button></div>
-          <div id="errList" class="mini-list"></div>
+        <div class="card span2">
+          <div class="card-h"><h3>📋 任务概览</h3><a class="link" data-goto="downloads">前往下载任务 →</a></div>
+          <div class="ov-grid">
+            <div class="ov-col">
+              <div class="ov-h"><span>⬇ 正在下载</span></div>
+              <div id="dlNow" class="mini-list"></div>
+            </div>
+            <div class="ov-col">
+              <div class="ov-h"><span>⚠️ 失败待重试</span>
+                <button class="btn ghost sm" id="btnRetryFailed">重试</button></div>
+              <div id="errList" class="mini-list"></div>
+            </div>
+          </div>
         </div>
       </div>
     </section>

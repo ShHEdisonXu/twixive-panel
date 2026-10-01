@@ -85,7 +85,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Micr
   border-radius:20px;padding:2px 9px;font-weight:600}
 
 /* ===== 统计卡 ===== */
-.stats{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:18px}
+.stats{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:16px}
 .stat{position:relative;overflow:hidden;background:linear-gradient(160deg,var(--panel-2),var(--panel));
   border:1px solid var(--line);border-radius:16px;padding:15px 15px 13px;box-shadow:var(--shadow-sm);transition:.18s}
 .stat:hover{transform:translateY(-2px);border-color:rgba(124,92,255,.45)}
@@ -215,10 +215,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Micr
 .hint b{color:var(--accent-2)}
 
 /* ===== 控制台 ===== */
-.dash-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+.dash-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
 .card.span2{grid-column:span 2}
-.card.span3{grid-column:span 3}
-.feed{display:flex;flex-direction:column;gap:8px;max-height:360px;overflow:auto}
+.ov-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.ov-col{display:flex;flex-direction:column;min-width:0}
+.ov-h{display:flex;align-items:center;justify-content:space-between;gap:8px;
+  font-size:13px;font-weight:700;color:var(--muted);margin-bottom:11px}
+.feed{display:flex;flex-direction:column;gap:8px;max-height:300px;overflow:auto}
 .feed-row{display:flex;align-items:center;gap:9px;padding:9px 11px;background:var(--panel-3);
   border:1px solid var(--line-soft);border-radius:11px;font-size:13px}
 .feed-row .ft{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -307,6 +310,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Micr
 @media(max-width:900px){
   .dash-grid{grid-template-columns:1fr}
   .card.span2,.card.span3{grid-column:span 1}
+  .ov-grid{grid-template-columns:1fr}
 }
 
 /* ===== 手机端：导航移到底部 ===== */
@@ -531,7 +535,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Micr
 .rec-empty{padding:64px 20px;text-align:center;color:#8b94a6}
 .rec-empty .le-sub{margin-top:8px;font-size:13px;opacity:.8}
 .rec-item .ic{font-size:20px;display:flex;align-items:center;justify-content:center;width:34px}
-/* 重复文件 */
 
 @media(max-width:820px){
   /* 手机端顶栏：返回 / 全部 / 收藏 / 排序 / 网格（搜索与其余分类隐藏） */
