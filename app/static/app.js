@@ -51,6 +51,7 @@ let state = {
     items: [], total: 0, all: 0, page: 1, has_more: false, loading: false,
     cat: '', starOnly: false, q: '', sort: 'time',
     cats: [], starCount: 0, index: 0,
+    speed: 1.0, autoNext: true,   // 视频库默认倍速 / 播完自动连播下一条
     seed: '',   // 随机排序用的确定性种子，保证分页加载时顺序不乱
     // 'feed' 沉浸式单条（抖音式） / 'grid' 一行三个的网格
     mute: localStorage.getItem('twixive.libMute') === '1'
@@ -136,6 +137,11 @@ function fillSettings(){
   const pe=$('#proxy_enabled'); if(pe) pe.checked = s.proxy_enabled!==false;
   $('#concurrent').value=s.concurrent??3; $('#rate_delay').value=s.rate_delay??2;
   $('#retry_times').value=s.retry_times??2; $('#max_size_mb').value=s.max_size_mb??0;
+  // 视频库：默认倍速 + 自动连播
+  state.lib.speed = +s.default_playback_rate || 1;
+  state.lib.autoNext = s.auto_play_next !== false;
+  const dr=$('#default_playback_rate'); if(dr) dr.value=String(state.lib.speed);
+  const ap=$('#auto_play_next'); if(ap) ap.checked=state.lib.autoNext;
   $('#download_path').value=s.download_path||'';
   $('#auto_enabled').checked=!!s.auto_enabled; $('#auto_interval').value=s.auto_interval??60;
   updateProxyChip();
@@ -630,7 +636,7 @@ window.addEventListener('mousemove', e=>{
   const dx = e.clientX - m.sx, dy = e.clientY - m.sy;
   if(!m.moved && (Math.abs(dx) > 8 || Math.abs(dy) > 8)){
     m.moved = true; clearTimeout(m.lpTimer);
-    if(m.speeding){ m.speeding = false; m.v.playbackRate = 1; m.el.classList.remove('speeding'); }
+    if(m.speeding){ m.speeding = false; m.v.playbackRate = state.lib.speed; m.el.classList.remove('speeding'); }
   }
   if(m.moved && !m.axis) m.axis = Math.abs(dx) > Math.abs(dy) * 1.3 ? 'x' : 'y';
   if(m.axis !== 'x') return;
@@ -648,7 +654,7 @@ window.addEventListener('mousemove', e=>{
 window.addEventListener('mouseup', ()=>{
   const m = libMouse; if(!m) return;
   libMouse = null; clearTimeout(m.lpTimer);
-  if(m.speeding){ m.v.playbackRate = 1; m.el.classList.remove('speeding'); }
+  if(m.speeding){ m.v.playbackRate = state.lib.speed; m.el.classList.remove('speeding'); }
   if(m.seeking){ m.el.classList.remove('seeking'); hideLibTip(); saveLibProgress(m.el); }
 });
 
@@ -714,7 +720,7 @@ function libItemHTML(it){
   const avatar = ((it.cat_label||'库').trim()[0] || '库');
   const dur = it.duration ? fmtDur(it.duration) : '';
   return `<video src="/api/media/stream?path=${encodeURIComponent(it.path)}"
-      preload="none" playsinline webkit-playsinline loop></video>
+      preload="none" playsinline webkit-playsinline></video>
     <div class="lib-burst">${ICON.heart}</div>
     <div class="lib-seek">
       <span class="lsk-arrow lsk-back">${ICON.seekL}</span>
@@ -820,7 +826,7 @@ function bindLibItem(el, v){
   };
   const stopSpeed = ()=>{
     if(!speeding) return;
-    speeding = false; v.playbackRate = 1; el.classList.remove('speeding');
+    speeding = false; v.playbackRate = state.lib.speed; el.classList.remove('speeding');
   };
   const beginSeek = x=>{
     seeking = true; seekX0 = x; seekFrom = v.currentTime || 0;
@@ -930,6 +936,37 @@ function bindLibItem(el, v){
     else if(act==='open') libOpen(el);
     else if(act==='del') libDelete(el);
   }));
+  // 自动连播：去掉原生 loop，由 ended 事件接管（受设置开关控制）
+  v.loop = !state.lib.autoNext;
+  v.addEventListener('ended', ()=>{ if(state.lib.autoNext) autoPlayNext(el); });
+}
+
+// 播完自动连播下一条：滚到下一条，由 IntersectionObserver 接管自动播放
+function autoPlayNext(el){
+  const items = libItems();
+  const i = +el.dataset.i;
+  let next = items[i + 1];
+  if(!next){
+    // 当前页已到底：还有更多就先加载下一页，再滚到新出现的那条
+    if(state.lib.has_more && !state.lib.loading){
+      loadLibrary(false).then(()=>{
+        const items2 = libItems();
+        const n2 = items2[i + 1];
+        if(n2) n2.scrollIntoView({behavior:'smooth'});
+      }).catch(()=>{});
+    }
+    return;
+  }
+  next.scrollIntoView({behavior:'smooth'});
+}
+
+// 设置变更后，把已渲染视频的 loop / 倍速同步一遍（倍速不覆盖正在长按加速的那条）
+function applyLibPlayback(){
+  libItems().forEach(el=>{
+    const v = el.querySelector('video'); if(!v) return;
+    v.loop = !state.lib.autoNext;
+    if(!el.classList.contains('speeding')) v.playbackRate = state.lib.speed;
+  });
 }
 
 // ---- 播放中的各种提示与进度条绘制 ----
@@ -1000,6 +1037,7 @@ function setupLibObserver(){
         const ni = +el.dataset.i;
         if(ni !== state.lib.index){ state.lib.index = ni; refreshPreload(ni); }
         v.muted = state.lib.mute;
+        v.playbackRate = state.lib.speed;   // 按设置的默认倍速起播
         const p = v.play();
         if(p && p.catch) p.catch(()=> el.classList.add('paused'));
       } else if(!v.paused){
@@ -1272,9 +1310,14 @@ $('#btnSaveSettings').onclick=async()=>{
     proxy_enabled:$('#proxy_enabled').checked,
     concurrent:+$('#concurrent').value||1, rate_delay:+$('#rate_delay').value||0,
     retry_times:+$('#retry_times').value||0, max_size_mb:+$('#max_size_mb').value||0,
+    default_playback_rate: parseFloat($('#default_playback_rate').value)||1,
+    auto_play_next: $('#auto_play_next').checked,
     auto_enabled:$('#auto_enabled').checked, auto_interval:+$('#auto_interval').value||60
   };
   state.settings=await api('/settings',{method:'POST',body:JSON.stringify(patch)});
+  state.lib.speed = state.settings.default_playback_rate || 1;
+  state.lib.autoNext = !!state.settings.auto_play_next;
+  applyLibPlayback();
   updateProxyChip();
   updateHud(state.tasks);
   toast('设置已保存');

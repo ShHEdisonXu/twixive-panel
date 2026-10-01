@@ -210,6 +210,19 @@
           </label>
           <p class="hint">在「分类下载」页点分类上的 📡 即可<b>监控该分类</b>：有新的视频出现时自动加入下载队列（按视频地址去重，不会重复下）。开启上方总开关后，所有分类都会纳入巡检。</p>
         </div>
+        <div class="card">
+          <div class="card-h"><h3>📱 视频库</h3></div>
+          <label class="fld">默认倍速
+            <select id="default_playback_rate">
+              <option value="1.0">1.0×（原速）</option>
+              <option value="1.25">1.25×</option>
+              <option value="1.5">1.5×</option>
+              <option value="2.0">2.0×</option>
+            </select>
+          </label>
+          <label class="switch"><input type="checkbox" id="auto_play_next" /> 播完自动连播下一条</label>
+          <p class="hint">倍速对视频库内所有视频生效（长按仍可临时加速到 3×，松手恢复默认）。开启连播后，视频播完会自动滑到下一条播放；关闭则单条循环。</p>
+        </div>
       </div>
     </section>
   </main>
