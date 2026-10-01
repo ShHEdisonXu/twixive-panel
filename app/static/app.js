@@ -469,6 +469,7 @@ function taskRow(t){
     : `<div class="tthumb ph">🎬</div>`;
   const retry = (t.status==='error'||t.status==='cancelled') ? '<button data-act="retry">重试</button>' : '';
   const cancel = (t.status==='pending'||t.status==='downloading') ? '<button data-act="cancel">取消</button>' : '';
+  const fdl = (t.status==='skipped') ? '<button data-act="fdownload" title="忽略大小上限，强制下载">下载</button>' : '';
   const mon = t.monitored ? '<span class="badge mon-b" title="来自监控中的分类">📡 监控</span>' : '';
   const tm = '<span class="mc ttime" title="触发下载时间">🕒 '+fmtTime(t.created_at)+'</span>';
   const delTitle = (state.purge && t.path) ? '删除任务，并删除源文件（移入回收站，可恢复）' : '只删除任务记录';
@@ -483,7 +484,7 @@ function taskRow(t){
     </div>
     <div class="acts">
       <button data-act="preview" title="预览">▶</button>
-      ${retry}${cancel}
+      ${retry}${cancel}${fdl}
       <button data-act="del" title="${delTitle}">${delTxt}</button>
     </div></div>`;
 }
@@ -494,6 +495,7 @@ function bindTaskActs(scope){
       const act=b.dataset.act;
       if(act==='cancel'){ await api('/tasks/'+id+'/cancel',{method:'POST'}); loadTasks(); return; }
       if(act==='retry'){ await api('/tasks/'+id+'/retry',{method:'POST'}); loadTasks(); return; }
+      if(act==='fdownload'){ await api('/tasks/'+id+'/force_download',{method:'POST'}); loadTasks(); return; }
       if(act==='preview'){ const t=state.tasks.find(x=>x.id===id); if(t) openPreview(t); return; }
       if(act==='del'){
         const t=state.tasks.find(x=>x.id===id)||{};

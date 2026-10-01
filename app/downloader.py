@@ -340,6 +340,8 @@ class DownloadManager:
         sess = config.build_session()
         max_mb = float(s.get("max_size_mb") or 0)
         max_bytes = int(max_mb * 1024 * 1024) if max_mb > 0 else 0
+        # 强制下载：忽略大小上限（用户手动点「下载」的已跳过任务）
+        force = bool(int((db.get_task(tid) or {}).get("force") or 0))
 
         title = task_title(tid)
         # uid 并入文件名：避免同一作者的多个视频撞名（否则续传偏移对不上 → 416）
@@ -394,7 +396,7 @@ class DownloadManager:
                 total = length
 
             # 大小上限：已知总大小时提前放弃
-            if max_bytes and total and total > max_bytes:
+            if max_bytes and total and total > max_bytes and not force:
                 self._give_up_size(tid, full, total, max_mb)
                 return
 
@@ -410,7 +412,7 @@ class DownloadManager:
                     f.write(chunk)
                     done += len(chunk)
                     _tick_speed(tid, done)  # 实时速度采样
-                    if max_bytes and done > max_bytes:
+                    if max_bytes and done > max_bytes and not force:
                         break  # 超过上限，放弃本次
                     if total:
                         db.update_task(tid, progress=round(done / total * 100, 1),
@@ -419,7 +421,7 @@ class DownloadManager:
                         db.update_task(tid, size=done)
 
             # 下载中才发现超限（服务端未提供总大小）
-            if max_bytes and done > max_bytes:
+            if max_bytes and done > max_bytes and not force:
                 self._give_up_size(tid, full, done, max_mb)
                 return
 

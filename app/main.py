@@ -446,7 +446,7 @@ def storage(force: int = 0):
             disk = {}
         tracked = 0
         try:
-            for t in db.list_tasks(5000):
+            for t in db.list_tasks():
                 if t.get("status") == "done":
                     tracked += int(t.get("size") or 0)
         except Exception:
@@ -748,6 +748,18 @@ def retry_one(tid: str):
     if ok:
         downloader.manager().enqueue(tid)
     return {"ok": ok}
+
+
+@app.post("/api/tasks/{tid}/force_download")
+def force_download(tid: str):
+    """强制下载（忽略大小上限）：把任务重新置为等待并把 force 置 1，
+    下载器读到 force=1 会跳过大小上限检查。主要用于「已跳过」的任务。"""
+    t = db.get_task(tid)
+    if not t:
+        return {"ok": False, "error": "任务不存在"}
+    db.update_task(tid, status="pending", progress=0.0, error="", size=0, force=1)
+    downloader.manager().enqueue(tid)
+    return {"ok": True}
 
 
 @app.post("/api/tasks/retry_failed")

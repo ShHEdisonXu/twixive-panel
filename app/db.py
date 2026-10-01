@@ -68,6 +68,11 @@ def init():
             c.execute("ALTER TABLE tasks ADD COLUMN thumbnail TEXT DEFAULT ''")
         except Exception:
             pass
+        # 兼容旧库：补 force 列（强制下载：忽略大小上限）
+        try:
+            c.execute("ALTER TABLE tasks ADD COLUMN force INTEGER DEFAULT 0")
+        except Exception:
+            pass
         # 视频库：以「文件相对路径」为主键记录收藏与播放进度。
         # 不能用 tasks.id 当主键 —— 库里存在没有任务记录的历史文件（扫盘比记录多
         # 出的那部分），任务记录被清掉后文件仍在，收藏和进度必须跟着文件走。
@@ -259,14 +264,15 @@ def add_task(title, url, category, thumbnail=""):
     return tid
 
 
-def list_tasks(limit=1000):
+def list_tasks(limit=100000):
     with _lock, sqlite3.connect(DB_PATH) as c:
         rows = c.execute("SELECT id, title, url, category, status, progress, "
-                         "size, path, error, created_at, thumbnail FROM tasks "
+                         "size, path, error, created_at, thumbnail, force FROM tasks "
                          "ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
     return [{"id": r[0], "title": r[1], "url": r[2], "category": r[3],
              "status": r[4], "progress": r[5], "size": r[6], "path": r[7],
-             "error": r[8], "created_at": r[9], "thumbnail": r[10] or ""}
+             "error": r[8], "created_at": r[9], "thumbnail": r[10] or "",
+             "force": r[11] or 0}
             for r in rows]
 
 
@@ -304,12 +310,20 @@ def retry_failed():
 
 
 def get_task(tid):
-    rows = list_tasks(1000)
-    return next((t for t in rows if t["id"] == tid), None)
+    with _lock, sqlite3.connect(DB_PATH) as c:
+        r = c.execute("SELECT id, title, url, category, status, progress, "
+                      "size, path, error, created_at, thumbnail, force FROM tasks "
+                      "WHERE id=?", (tid,)).fetchone()
+    if not r:
+        return None
+    return {"id": r[0], "title": r[1], "url": r[2], "category": r[3],
+            "status": r[4], "progress": r[5], "size": r[6], "path": r[7],
+            "error": r[8], "created_at": r[9], "thumbnail": r[10] or "",
+            "force": r[11] or 0}
 
 
 def update_task(tid, **fields):
-    allowed = {"title", "url", "category", "status", "progress", "size", "path", "error"}
+    allowed = {"title", "url", "category", "status", "progress", "size", "path", "error", "force"}
     fields = {k: v for k, v in fields.items() if k in allowed}
     if not fields:
         return
