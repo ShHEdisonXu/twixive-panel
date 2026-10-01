@@ -15,8 +15,12 @@
   POST /api/tasks/{id}/cancel      取消
   POST /api/tasks/{id}/retry       重试单条
   POST /api/tasks/retry_failed     一键重试全部失败
-  DELETE /api/tasks/{id}?purge=1   删除（purge=1 时连带删除源文件）
-  POST /api/tasks/clear?purge=1    清除已完成/失败/已跳过（purge=1 连文件一起删）
+  DELETE /api/tasks/{id}?purge=1   删除（purge=1 时连带文件移入回收站）
+  POST /api/tasks/clear?purge=1    清除已完成/失败/已跳过（purge=1 文件移入回收站）
+  GET  /api/recycle                回收站列表
+  POST /api/recycle/restore        恢复 {id}（移回原目录）
+  DELETE /api/recycle/{id}         彻底删除某条
+  POST /api/recycle/empty          清空回收站
   POST /api/auto/run               立即执行一次巡检
   GET  /api/proxy/status           代理熔断状态（是否暂停、剩余秒数）
   POST /api/proxy/test             服务端自检代理连通性（含直连对照）
@@ -29,8 +33,9 @@ import os
 import random
 import shutil
 import time
+import uuid
 from datetime import datetime, timezone
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Body
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from . import db
@@ -40,6 +45,7 @@ from . import errors
 from .sources import get_adapter, REGISTRY
 
 BASE = os.path.dirname(__file__)
+RECYCLE_DIR = os.path.join(db.DATA_DIR, ".recycle")   # 回收站目录（与下载同卷，rename 瞬时）
 STATIC = os.path.join(BASE, "static")
 
 app = FastAPI(title="TwiXive Panel")
@@ -134,10 +140,11 @@ def _dir_stats(path):
 
 
 def _safe_remove(rel_path, root):
-    """删除下载目录内的单个文件，返回释放的字节数。
+    """删除下载目录内的单个文件：先**移入回收站**（软删除），返回其字节数。
 
-    安全约束：只删 root 之内的**普通文件**。相对路径可能来自库里被改脏的
+    安全约束：只处理 root 之内的**普通文件**。相对路径可能来自库里被改脏的
     记录（含 ../），一律先 realpath 再做前缀校验，越界直接跳过。
+    移入回收站而非真删，误删可在「回收站」里一键恢复。
     """
     if not rel_path or not root:
         return 0
@@ -149,8 +156,17 @@ def _safe_remove(rel_path, root):
         return 0
     try:
         size = os.path.getsize(full)
-        os.remove(full)
-    except Exception:
+        os.makedirs(RECYCLE_DIR, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        base = os.path.basename(full)
+        dest = os.path.join(RECYCLE_DIR, f"{stamp}_{base}")
+        # 同秒多次删除可能重名，加短随机后缀兜底，绝不覆盖已有文件
+        while os.path.exists(dest):
+            dest = os.path.join(RECYCLE_DIR, f"{stamp}_{uuid.uuid4().hex[:6]}_{base}")
+        os.rename(full, dest)                      # 同卷内 rename 瞬时完成
+        db.add_recycle(rel_path, dest, base, size, os.path.dirname(full))
+    except Exception as e:
+        print("[recycle] move to recycle bin failed:", e)
         return 0
     # 顺手清理因此变空的分类目录（非空会抛异常，正好跳过）
     d = os.path.dirname(full)
@@ -611,7 +627,7 @@ async def media_meta(req: Request):
 def media_delete(path: str):
     """删除视频文件本身，连带清掉收藏记录和指向它的任务记录。
 
-    文件删除不可恢复，由前端二次确认；这里只负责路径越界防护。
+    文件先移入回收站（软删除），误删可恢复；这里只负责路径越界防护。
     """
     root = db.get_settings().get("download_path")
     freed = _safe_remove(path, root)
@@ -661,6 +677,68 @@ def clear_tasks(purge: int = 0):
     db.clear_finished()
     _STORAGE["t"] = 0
     return {"ok": True, "freed": freed}
+
+
+# ---- 回收站（软删除：删除的源文件先移入回收站，可恢复 / 可彻底删 / 到期自动清）----
+@app.get("/api/recycle")
+def recycle_list():
+    items = db.list_recycle()
+    total = sum(i["size"] for i in items)
+    return {"items": items, "count": len(items), "total_size": total}
+
+
+@app.post("/api/recycle/restore")
+def recycle_restore(body: dict = Body(...)):
+    rid = body.get("id")
+    r = db.get_recycle(rid)
+    if not r:
+        return {"ok": False, "error": "回收站条目不存在"}
+    name = os.path.basename(r["rel_path"] or r["abs_path"])
+    dest_dir = r["original_dir"]
+    try:
+        os.makedirs(dest_dir, exist_ok=True)
+    except Exception:
+        pass
+    target = os.path.join(dest_dir, name)
+    if os.path.exists(target):        # 目标已存在则改名，绝不覆盖
+        target = os.path.join(dest_dir, f"{uuid.uuid4().hex[:8]}_{name}")
+    try:
+        os.rename(r["abs_path"], target)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    db.delete_recycle(rid)
+    _STORAGE["t"] = 0
+    return {"ok": True, "path": os.path.relpath(target, dest_dir)}
+
+
+@app.delete("/api/recycle/{rid}")
+def recycle_delete(rid: str):
+    r = db.get_recycle(rid)
+    if not r:
+        return {"ok": False, "error": "回收站条目不存在"}
+    try:
+        if os.path.isfile(r["abs_path"]):
+            os.remove(r["abs_path"])
+    except Exception:
+        pass
+    db.delete_recycle(rid)
+    _STORAGE["t"] = 0
+    return {"ok": True}
+
+
+@app.post("/api/recycle/empty")
+def recycle_empty():
+    n = 0
+    for it in db.list_recycle():
+        try:
+            if os.path.isfile(it["abs_path"]):
+                os.remove(it["abs_path"])
+            n += 1
+        except Exception:
+            pass
+        db.delete_recycle(it["id"])
+    _STORAGE["t"] = 0
+    return {"ok": True, "removed": n}
 
 
 @app.post("/api/tasks/{tid}/retry")

@@ -9,7 +9,7 @@ import json
 import threading
 import hashlib
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from . import errors  # 报错中文化（纯字符串处理，无循环依赖）
 
@@ -34,6 +34,7 @@ DEFAULT_SETTINGS = {
     "page_size": 100,           # 分类页每次拉取/加载多少条（100~1000）
     "default_playback_rate": 1.0,  # 视频库默认播放倍速（1/1.25/1.5/2），长按仍可临时加速到 3×
     "auto_play_next": True,        # 视频库播完自动连播下一条（关闭则为单条循环）
+    "recycle_retention_days": 30,  # 回收站保留天数，超过则自动彻底删除
 }
 
 # 已废弃的设置项（历史库里可能残留，启动时清理）
@@ -74,6 +75,10 @@ def init():
             path TEXT PRIMARY KEY, star INTEGER DEFAULT 0,
             position REAL DEFAULT 0, duration REAL DEFAULT 0,
             plays INTEGER DEFAULT 0, updated_at TEXT)""")
+        # 回收站：软删除的源文件，可恢复 / 可彻底删 / 到期自动清
+        c.execute("""CREATE TABLE IF NOT EXISTS recycle_bin (
+            id TEXT PRIMARY KEY, rel_path TEXT, abs_path TEXT, title TEXT,
+            size INTEGER DEFAULT 0, deleted_at TEXT, original_dir TEXT)""")
         # 写入缺省设置（仅当 key 不存在）
         for k, v in DEFAULT_SETTINGS.items():
             c.execute("INSERT OR IGNORE INTO settings(key, value) VALUES(?,?)",
@@ -381,3 +386,44 @@ def busy_paths():
                          "('pending','downloading') AND path IS NOT NULL "
                          "AND path<>''").fetchall()
     return {r[0] for r in rows}
+
+
+# ---- 回收站（软删除：删除的源文件先移入回收站，可恢复 / 可彻底删 / 到期自动清）----
+def add_recycle(rel_path, abs_path, title, size, original_dir):
+    with _lock, sqlite3.connect(DB_PATH) as c:
+        c.execute("""CREATE TABLE IF NOT EXISTS recycle_bin (
+            id TEXT PRIMARY KEY, rel_path TEXT, abs_path TEXT, title TEXT,
+            size INTEGER DEFAULT 0, deleted_at TEXT, original_dir TEXT)""")
+        c.execute("INSERT INTO recycle_bin(id, rel_path, abs_path, title, size, deleted_at, original_dir) "
+                  "VALUES(?,?,?,?,?,?,?)",
+                  (uuid.uuid4().hex, rel_path, abs_path, title, int(size or 0), _now(), original_dir))
+    return True
+
+def list_recycle():
+    with _lock, sqlite3.connect(DB_PATH) as c:
+        rows = c.execute("SELECT id, rel_path, abs_path, title, size, deleted_at, original_dir "
+                         "FROM recycle_bin ORDER BY deleted_at DESC").fetchall()
+    return [{"id": r[0], "rel_path": r[1], "abs_path": r[2],
+            "title": r[3] or os.path.basename(r[1] or r[2] or ''),
+            "size": r[4] or 0, "deleted_at": r[5], "original_dir": r[6]} for r in rows]
+
+def get_recycle(rid):
+    with _lock, sqlite3.connect(DB_PATH) as c:
+        r = c.execute("SELECT id, abs_path, original_dir, rel_path FROM recycle_bin WHERE id=?",
+                      (rid,)).fetchone()
+    if not r:
+        return None
+    return {"id": r[0], "abs_path": r[1], "original_dir": r[2], "rel_path": r[3]}
+
+def delete_recycle(rid):
+    with _lock, sqlite3.connect(DB_PATH) as c:
+        c.execute("DELETE FROM recycle_bin WHERE id=?", (rid,))
+
+def purge_old_recycle(days):
+    """返回超过保留期的条目绝对路径（供调用方真删文件），并删除这些记录。"""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max(0, int(days or 0)))).isoformat()
+    with _lock, sqlite3.connect(DB_PATH) as c:
+        rows = c.execute("SELECT id, abs_path FROM recycle_bin WHERE deleted_at < ?",
+                         (cutoff,)).fetchall()
+        c.executemany("DELETE FROM recycle_bin WHERE id=?", [(r[0],) for r in rows])
+    return [r[1] for r in rows if r[1]]

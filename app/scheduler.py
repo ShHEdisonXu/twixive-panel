@@ -6,6 +6,7 @@
 - start()/stop() 控制后台线程；run_once() 可手动触发一次。
 - 每次循环都从设置实时读取开关与间隔，改设置即时生效，无需重启。
 """
+import os
 import threading
 import time
 
@@ -95,6 +96,20 @@ def _loop():
             run_once()
         except Exception as e:  # noqa
             print("[scheduler] tick error:", e)
+        # 回收站过期清理：与巡检同频触发（auto_enabled 关闭时仍照常清理）
+        try:
+            days = db.get_settings().get("recycle_retention_days") or 30
+            expired = db.purge_old_recycle(days)
+            for p in expired:
+                try:
+                    if os.path.isfile(p):
+                        os.remove(p)
+                except Exception:
+                    pass
+            if expired:
+                print(f"[scheduler] purged {len(expired)} expired file(s) from recycle bin")
+        except Exception as e:  # noqa
+            print("[scheduler] recycle purge error:", e)
 
 
 def start():

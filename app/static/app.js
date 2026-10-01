@@ -75,6 +75,7 @@ $$('.nav').forEach(n=>n.onclick=()=>{
   $('#view-'+n.dataset.view).classList.remove('hidden');
   if(n.dataset.view==='downloads') loadTasks();
   if(n.dataset.view==='library') loadLibrary(true);
+  if(n.dataset.view==='recycle') loadRecycle();
   else stopLibrary();   // 离开视频库必须停掉正在播放的视频，否则后台一直在跑
   window.scrollTo({top:0,behavior:'smooth'});
 });
@@ -470,7 +471,7 @@ function taskRow(t){
   const cancel = (t.status==='pending'||t.status==='downloading') ? '<button data-act="cancel">取消</button>' : '';
   const mon = t.monitored ? '<span class="badge mon-b" title="来自监控中的分类">📡 监控</span>' : '';
   const tm = '<span class="mc ttime" title="触发下载时间">🕒 '+fmtTime(t.created_at)+'</span>';
-  const delTitle = (state.purge && t.path) ? '删除任务，并删除源文件（不可恢复）' : '只删除任务记录';
+  const delTitle = (state.purge && t.path) ? '删除任务，并删除源文件（移入回收站，可恢复）' : '只删除任务记录';
   const delTxt = (state.purge && t.path) ? '删除+文件' : '删除';
   return `<div class="task ${cls}" data-id="${t.id}">
     <div class="ic">${ic}</div>
@@ -499,7 +500,7 @@ function bindTaskActs(scope){
         const hasFile=!!t.path;
         if(state.purge && hasFile){
           // 源文件删了就找不回来，动手前必须确认一次
-          if(!confirm('删除任务「'+(t.title||'')+'」\n并删除源文件（'+(t.size?fmtSize(t.size):'文件')+'）？\n\n文件删除不可恢复。若只想删记录，先取消勾选「删除时同时删源文件」。')) return;
+          if(!confirm('删除任务「'+(t.title||'')+'」\n并将源文件移入回收站（'+(t.size?fmtSize(t.size):'文件')+'）？\n\n文件会先进回收站，可在「回收站」恢复或彻底删除。若只想删记录，先取消勾选「删除时同时删源文件」。')) return;
         }
         const r=await api('/tasks/'+id+(state.purge?'?purge=1':''),{method:'DELETE'});
         toast(state.purge&&r.freed? ('已删除任务，释放 '+fmtGB(r.freed)) : '已删除任务记录');
@@ -517,12 +518,69 @@ $('#btnClear').onclick=async()=>{
   let purge=state.purge;
   if(purge){
     const sz=done.reduce((a,t)=>a+(t.size||0),0);
-    if(!confirm('清除 '+done.length+' 条已结束任务，并删除它们的源文件（约 '+fmtGB(sz)+'）？\n\n文件删除不可恢复。')) return;
+    if(!confirm('清除 '+done.length+' 条已结束任务，并将源文件移入回收站（约 '+fmtGB(sz)+'）？\n\n文件会先进回收站，可在「回收站」彻底删除腾出空间。')) return;
   }
   const r=await api('/tasks/clear'+(purge?'?purge=1':''),{method:'POST'});
   toast('已清除 '+done.length+' 条'+(r.freed?('，释放 '+fmtGB(r.freed)):''));
   loadStorage(false);
   loadTasks();
+};
+
+// ---- 回收站（软删除：删除的源文件先移入回收站，可恢复 / 可彻底删）----
+async function loadRecycle(){
+  const list=$('#recList'), sum=$('#recSummary'), empty=$('#recEmpty');
+  if(!list) return;
+  let data;
+  try{ data=await api('/recycle'); }catch(e){ toast('回收站加载失败：'+e); return; }
+  const items=data.items||[];
+  const badge=document.querySelector('[data-badge="recycle"]');
+  if(badge){ badge.textContent=items.length; badge.hidden=!items.length; }
+  if(!items.length){ list.innerHTML=''; if(sum) sum.textContent=''; if(empty) empty.hidden=false; return; }
+  if(empty) empty.hidden=true;
+  if(sum) sum.textContent=`共 ${items.length} 项 · 占用 ${fmtGB(data.total_size||0)} · 超过保留期(默认30天)将自动清理`;
+  list.innerHTML=items.map(it=>{
+    const name=esc(it.title||'(未命名)');
+    const sz=fmtSize(it.size||0);
+    const dt=fmtTime(it.deleted_at);
+    const loc=esc(it.original_dir||'');
+    return `<div class="task rec-item" data-id="${it.id}">
+      <div class="ic"><span class="mc">🗑</span></div>
+      <div class="body">
+        <div class="tt">${name}</div>
+        <div class="meta"><span class="badge">${sz}</span> · <span class="mc" title="删除时间">🕒 ${dt}</span> <span class="mc" title="原位置">📁 ${loc}</span></div>
+      </div>
+      <div class="acts">
+        <button data-act="restore" title="恢复到原位置">恢复</button>
+        <button data-act="del" title="彻底删除（不可恢复）">彻底删除</button>
+      </div></div>`;
+  }).join('');
+  bindRecycleActs(list);
+}
+function bindRecycleActs(scope){
+  scope.querySelectorAll('.rec-item').forEach(row=>{
+    const id=row.dataset.id;
+    row.querySelectorAll('[data-act]').forEach(b=>b.onclick=async()=>{
+      const act=b.dataset.act;
+      if(act==='restore'){
+        const r=await api('/recycle/restore',{method:'POST',body:JSON.stringify({id})});
+        if(r.ok){ toast('已恢复到原位置'); loadRecycle(); loadStorage(false); }
+        else toast('恢复失败：'+(r.error||'未知'));
+      } else if(act==='del'){
+        if(!confirm('彻底删除该文件？此操作不可恢复。')) return;
+        const r=await api('/recycle/'+id,{method:'DELETE'});
+        if(r.ok){ toast('已彻底删除'); loadRecycle(); loadStorage(false); }
+        else toast('删除失败：'+(r.error||'未知'));
+      }
+    });
+  });
+}
+$('#btnEmptyRecycle').onclick=async()=>{
+  const data=await api('/recycle').catch(()=>({count:0}));
+  if(!(data.count)){ toast('回收站已是空的'); return; }
+  if(!confirm(`清空回收站（${data.count} 项）？这些文件将被彻底删除，不可恢复。`)) return;
+  const r=await api('/recycle/empty',{method:'POST'});
+  toast('已清空回收站（'+(r.removed||0)+' 项）');
+  loadRecycle(); loadStorage(false);
 };
 $('#btnRetryFailed').onclick = retryFailed;
 $('#btnRetryFailed2').onclick = retryFailed;
@@ -1172,7 +1230,7 @@ async function libDelete(el){
   const i = +el.dataset.i;
   const it = state.lib.items[i]; if(!it) return;
   if(!confirm('删除视频文件？\n\n' + it.title + '\n' + fmtGB(it.size) +
-              '\n\n文件删除不可恢复，请确认。')) return;
+              '\n\n文件将移入回收站，可在「回收站」恢复或彻底删除。')) return;
   const v = el.querySelector('video'); if(v) v.pause();
   const r = await api('/media?path='+encodeURIComponent(it.path), {method:'DELETE'});
   toast(r.freed ? ('已删除，释放 '+fmtGB(r.freed)) : '磁盘上已没有该文件，仅清理了记录');

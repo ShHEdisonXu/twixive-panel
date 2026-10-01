@@ -40,6 +40,11 @@
         <span class="ni"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.3 1a7 7 0 0 0-1.7-1l-.3-2.6h-4l-.3 2.6a7 7 0 0 0-1.7 1l-2.3-1-2 3.4 2 1.5a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 1.7 1l.3 2.6h4l.3-2.6a7 7 0 0 0 1.7-1l2.3 1 2-3.4-2-1.5a7 7 0 0 0 .1-1z"/></svg></span>
         <span>设置</span>
       </a>
+      <a class="nav" data-view="recycle">
+        <span class="ni"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13"/></svg></span>
+        <span>回收站</span>
+        <em class="nav-badge" data-badge="recycle" hidden>0</em>
+      </a>
     </nav>
     <div class="proxy-chip" id="proxyChip" title="代理状态">
       <span class="dot"></span><span id="proxyText">代理未配置</span>
@@ -224,6 +229,17 @@
           <p class="hint">倍速对视频库内所有视频生效（长按仍可临时加速到 3×，松手恢复默认）。开启连播后，视频播完会自动滑到下一条播放；关闭则单条循环。</p>
         </div>
       </div>
+    </section>
+
+    <!-- 回收站 -->
+    <section class="view hidden" id="view-recycle">
+      <header class="page-head">
+        <div><h1>回收站</h1><p class="sub">删除的视频会先移入这里，可恢复 / 可彻底删除 / 到期自动清理</p></div>
+        <button class="btn ghost" id="btnEmptyRecycle">清空回收站</button>
+      </header>
+      <div class="rec-summary" id="recSummary"></div>
+      <div id="recList" class="task-list rec-list"></div>
+      <div class="rec-empty" id="recEmpty" hidden><p>回收站是空的</p><p class="le-sub">删除视频 / 源文件后会暂时留在这里，默认 30 天后自动清理</p></div>
     </section>
   </main>
 </div>
