@@ -76,7 +76,6 @@ $$('.nav').forEach(n=>n.onclick=()=>{
   if(n.dataset.view==='downloads') loadTasks();
   if(n.dataset.view==='library') loadLibrary(true);
   if(n.dataset.view==='recycle') loadRecycle();
-  if(n.dataset.view==='dedup') loadDedup();
   if(n.dataset.view!=='library') stopLibrary();   // 离开视频库必须停掉正在播放的视频
   window.scrollTo({top:0,behavior:'smooth'});
 });
@@ -584,125 +583,6 @@ $('#btnEmptyRecycle').onclick=async()=>{
   loadRecycle(); loadStorage(false);
 };
 
-// ---- 重复文件检测（扫盘 + 内容哈希，找出真正相同的视频）----
-let _dedupPolling = null;
-function startDedupScan(){
-  if(_dedupPolling) clearInterval(_dedupPolling);
-  api('/dedup/scan',{method:'POST'}).then(r=>{
-    if(r && r.running) startDedupPoll();
-    else if(r && r.finished) renderDedupGroups();
-    else toast('扫描未能启动');
-  }).catch(e=>toast('扫描启动失败：'+e));
-}
-function startDedupPoll(){
-  const progress=$('#dedupProgress'), empty=$('#dedupEmpty'), list=$('#dedupList'),
-        actions=$('#dedupActions'), bar=$('#dedupBar'), txt=$('#dedupProgTxt'),
-        summary=$('#dedupSummary');
-  if(empty) empty.hidden=true;
-  if(progress) progress.hidden=false;
-  if(summary) summary.textContent='';
-  if(list) list.innerHTML='';
-  if(actions) actions.hidden=true;
-  if(_dedupPolling) clearInterval(_dedupPolling);
-  _dedupPolling=setInterval(async()=>{
-    let s;
-    try{ s=await api('/dedup/status'); }catch(e){ return; }
-    const total=s.total||1, scanned=s.scanned||0;
-    const pct=total?Math.min(100,Math.round(scanned/total*100)):0;
-    if(bar) bar.style.width=pct+'%';
-    if(txt) txt.textContent=`扫描中… ${scanned} / ${total} 个文件 · 已发现 ${s.groups||0} 组重复`;
-    if(!s.running){
-      clearInterval(_dedupPolling); _dedupPolling=null;
-      if(progress) progress.hidden=true;
-      if(s.error){ if(summary) summary.textContent='扫描出错：'+s.error; return; }
-      await renderDedupGroups();
-    }
-  }, 1000);
-}
-async function loadDedup(){
-  const list=$('#dedupList'), summary=$('#dedupSummary'), progress=$('#dedupProgress'),
-        empty=$('#dedupEmpty'), actions=$('#dedupActions');
-  if(!list) return;
-  let status;
-  try{ status=await api('/dedup/status'); }catch(e){ status={finished:false,running:false}; }
-  if(status.running){ startDedupPoll(); return; }
-  if(status.finished){ await renderDedupGroups(); return; }
-  if(summary) summary.textContent='';
-  if(progress) progress.hidden=true;
-  if(empty) empty.hidden=false;
-  if(list) list.innerHTML='';
-  if(actions) actions.hidden=true;
-}
-async function renderDedupGroups(){
-  const list=$('#dedupList'), summary=$('#dedupSummary'), actions=$('#dedupActions'),
-        empty=$('#dedupEmpty'), progress=$('#dedupProgress'),
-        badge=document.querySelector('[data-badge="dedup"]');
-  let data;
-  try{ data=await api('/dedup/groups'); }catch(e){ toast('加载重复结果失败：'+e); return; }
-  const groups=data.groups||[];
-  state._dedupGroups = groups;
-  const totalDup=groups.reduce((a,g)=>a+(g.files.length-1),0);
-  const wasted=groups.reduce((a,g)=>a+g.size*(g.files.length-1),0);
-  if(badge){ badge.textContent=totalDup; badge.hidden=!totalDup; }
-  if(summary) summary.textContent = groups.length
-    ? `发现 ${groups.length} 组重复 · ${totalDup} 个重复文件 · 清理可释放 ${fmtGB(wasted)}`
-    : '没有发现重复文件 🎉';
-  if(empty) empty.hidden = groups.length>0;
-  if(progress) progress.hidden=true;
-  // 默认保留每个组的第一份（已按 plays 降序，即播放最多的），其余将删除
-  state.dedupKeep = {};
-  groups.forEach(g=>{ if(g.files[0]) state.dedupKeep[g.id]=g.files[0].rel_path; });
-  list.innerHTML=groups.map(g=>{
-    const each=fmtSize(g.size);
-    const files=g.files.map(f=>{
-      const kept=(state.dedupKeep[g.id]===f.rel_path);
-      return `<div class="dedup-file ${kept?'keep':''}" data-group="${g.id}" data-rel="${esc(f.rel_path)}">
-        <label class="dedup-keep">
-          <input type="radio" name="keep-${g.id}" ${kept?'checked':''} />
-          <span class="df-path" title="${esc(f.rel_path)}">${esc(f.rel_path)}</span>
-          ${f.plays?`<span class="badge">▶ ${f.plays}</span>`:''}
-        </label>
-        <span class="df-tag">${kept?'保留':'将删除'}</span>
-      </div>`;
-    }).join('');
-    return `<div class="dedup-group">
-      <div class="dg-h">重复组 · ${g.files.length} 个相同文件 · 每个 ${each} · 清理可省 ${fmtGB(g.size*(g.files.length-1))}</div>
-      ${files}
-    </div>`;
-  }).join('');
-  if(actions) actions.hidden = !groups.length;
-  bindDedupKeep(list);
-}
-function bindDedupKeep(scope){
-  scope.querySelectorAll('.dedup-file input[type=radio]').forEach(r=>{
-    r.onclick=()=>{
-      const row=r.closest('.dedup-file');
-      const g=row.dataset.group, rel=row.dataset.rel;
-      state.dedupKeep[g]=rel;
-      scope.querySelectorAll(`.dedup-file[data-group="${g}"]`).forEach(rw=>{
-        const isKeep=rw.dataset.rel===rel;
-        rw.classList.toggle('keep',isKeep);
-        const tag=rw.querySelector('.df-tag'); if(tag) tag.textContent=isKeep?'保留':'将删除';
-        const radio=rw.querySelector('input'); if(radio) radio.checked=isKeep;
-      });
-    };
-  });
-}
-$('#btnDedupScan').onclick=startDedupScan;
-$('#btnDedupRescan').onclick=startDedupScan;
-$('#btnDedupCleanAll').onclick=async()=>{
-  const groups=state._dedupGroups||[];
-  const del=[];
-  groups.forEach(g=>{
-    const keep=state.dedupKeep[g.id];
-    g.files.forEach(f=>{ if(f.rel_path!==keep) del.push(f.rel_path); });
-  });
-  if(!del.length){ toast('没有可删除的重复文件'); return; }
-  if(!confirm(`确认将 ${del.length} 个重复文件移入回收站？\n每个重复组会保留你勾选的一份（其余进回收站，可恢复）。`)) return;
-  const r=await api('/dedup/clean',{method:'POST',body:JSON.stringify({delete:del})});
-  if(r.ok){ toast(`已清理 ${r.removed} 个重复文件，释放 ${fmtGB(r.freed)}`); loadDedup(); loadStorage(false); }
-  else toast('清理失败：'+(r.error||'未知'));
-};
 $('#btnRetryFailed').onclick = retryFailed;
 $('#btnRetryFailed2').onclick = retryFailed;
 async function retryFailed(){
