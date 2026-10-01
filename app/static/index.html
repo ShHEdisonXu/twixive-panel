@@ -45,6 +45,11 @@
         <span>回收站</span>
         <em class="nav-badge" data-badge="recycle" hidden>0</em>
       </a>
+      <a class="nav" data-view="dedup">
+        <span class="ni"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M4 16V4a2 2 0 0 1 2-2h12"/></svg></span>
+        <span>重复文件</span>
+        <em class="nav-badge" data-badge="dedup" hidden>0</em>
+      </a>
     </nav>
     <div class="proxy-chip" id="proxyChip" title="代理状态">
       <span class="dot"></span><span id="proxyText">代理未配置</span>
@@ -240,6 +245,30 @@
       <div class="rec-summary" id="recSummary"></div>
       <div id="recList" class="task-list rec-list"></div>
       <div class="rec-empty" id="recEmpty" hidden><p>回收站是空的</p><p class="le-sub">删除视频 / 源文件后会暂时留在这里，默认 30 天后自动清理</p></div>
+    </section>
+
+    <!-- 重复文件 -->
+    <section class="view hidden" id="view-dedup">
+      <header class="page-head">
+        <div><h1>重复文件</h1><p class="sub">扫描下载目录，找出内容完全相同的视频（跨分类重复下载常出现），清理可省空间</p></div>
+      </header>
+      <div class="rec-summary" id="dedupSummary"></div>
+      <div class="dedup-panel">
+        <div class="dedup-progress" id="dedupProgress" hidden>
+          <div class="bar"><i id="dedupBar" style="width:0%"></i></div>
+          <div class="txt" id="dedupProgTxt">扫描中…</div>
+        </div>
+        <div class="rec-empty" id="dedupEmpty">
+          <p>还没有扫描过</p>
+          <p class="le-sub">点下面按钮开始扫描，会逐个计算文件指纹找出内容完全相同的视频</p>
+          <button class="btn primary" id="btnDedupScan">🔍 开始扫描</button>
+        </div>
+        <div class="dedup-list" id="dedupList"></div>
+        <div class="dedup-actions" id="dedupActions" hidden>
+          <button class="btn primary" id="btnDedupCleanAll">🧹 全部清理（保留每个重复组的一份）</button>
+          <button class="btn ghost" id="btnDedupRescan">🔄 重新扫描</button>
+        </div>
+      </div>
     </section>
   </main>
 </div>

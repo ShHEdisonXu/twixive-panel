@@ -427,3 +427,57 @@ def purge_old_recycle(days):
                          (cutoff,)).fetchall()
         c.executemany("DELETE FROM recycle_bin WHERE id=?", [(r[0],) for r in rows])
     return [r[1] for r in rows if r[1]]
+
+
+# ---- 重复文件检测（扫盘 + 内容哈希，结果缓存到这两张表）----
+def reset_dedup():
+    """删除并重建重复检测的结果表（每次扫描前调用）。"""
+    with _lock, sqlite3.connect(DB_PATH) as c:
+        c.execute("DROP TABLE IF EXISTS dedup_groups")
+        c.execute("DROP TABLE IF EXISTS dedup_files")
+        c.execute("""CREATE TABLE dedup_groups(
+            id TEXT PRIMARY KEY, hash TEXT, size INTEGER, count INTEGER, created_at TEXT)""")
+        c.execute("""CREATE TABLE dedup_files(
+            group_id TEXT, rel_path TEXT, abs_path TEXT, size INTEGER,
+            title TEXT, plays INTEGER DEFAULT 0)""")
+
+
+def add_dedup_group(gid, h, sz, members):
+    """写入一个重复组。members: [(rel, abs, size, plays), ...]，已按保留优先级排序。"""
+    with _lock, sqlite3.connect(DB_PATH) as c:
+        c.execute("INSERT INTO dedup_groups(id, hash, size, count, created_at) "
+                  "VALUES(?,?,?,?,?)", (gid, h, sz, len(members), _now()))
+        for rel, full, s, plays in members:
+            c.execute("INSERT INTO dedup_files(group_id, rel_path, abs_path, size, title, plays) "
+                      "VALUES(?,?,?,?,?,?)",
+                      (gid, rel, full, s, os.path.basename(rel or ""), int(plays or 0)))
+
+
+def list_dedup_groups():
+    """返回重复组列表（按单文件大小降序），每组含文件列表（按 plays 降序）。"""
+    with _lock, sqlite3.connect(DB_PATH) as c:
+        g = c.execute("SELECT id, hash, size, count FROM dedup_groups "
+                      "ORDER BY size DESC").fetchall()
+        out = []
+        for gid, h, sz, cnt in g:
+            files = c.execute(
+                "SELECT rel_path, abs_path, size, title, plays FROM dedup_files "
+                "WHERE group_id=? ORDER BY plays DESC, rel_path", (gid,)).fetchall()
+            out.append({"id": gid, "hash": h, "size": sz, "count": cnt,
+                        "files": [{"rel_path": r[0], "abs_path": r[1], "size": r[2],
+                                   "title": r[3], "plays": r[4] or 0} for r in files]})
+        return out
+
+
+def remove_dedup_files(rels):
+    """删除指定 rel_path 的重复记录；若某组剩余成员 < 2 则整组删除。"""
+    if not rels:
+        return
+    with _lock, sqlite3.connect(DB_PATH) as c:
+        for rel in rels:
+            c.execute("DELETE FROM dedup_files WHERE rel_path=?", (rel,))
+        # 清掉只剩 1 个（或 0 个）成员的组，避免界面出现「假重复」
+        c.execute("""DELETE FROM dedup_groups WHERE id IN (
+            SELECT g.id FROM dedup_groups g
+            LEFT JOIN dedup_files f ON f.group_id=g.id
+            GROUP BY g.id HAVING COUNT(f.rel_path) < 2)""")
