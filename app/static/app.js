@@ -1355,7 +1355,10 @@ function openPreview(item){
   const m=$('#previewModal'); m.classList.remove('hidden');
   $('#pvTitle').textContent = item.title || '预览';
   const v=$('#pvVideo');
-  v.src = item.url || '';
+  // 已完成/有本地文件的任务优先播本地流（和视频库一致，可拖动、稳定），
+  // 未下载的任务才退回原站 URL（可能受防盗链/格式限制放不了）
+  const local = item.path ? ('/api/media/stream?path=' + encodeURIComponent(item.path)) : '';
+  v.src = local || item.url || '';
   v.play().catch(()=>{});
   $('#pvFoot').textContent = catLabel(item.category);
 }
