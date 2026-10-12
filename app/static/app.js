@@ -81,6 +81,15 @@ $$('.nav').forEach(n=>n.onclick=()=>{
 });
 $$('[data-goto]').forEach(a=>a.onclick=()=>$('.nav[data-view="'+a.dataset.goto+'"]').click());
 
+// 跳到「下载任务」并切到指定状态筛选（控制台统计卡点击用）
+function gotoTasks(filterKey){
+  state.taskFilter = filterKey || 'all';
+  const n = $('.nav[data-view="downloads"]');
+  if(n && !n.classList.contains('active')) n.click();   // 切视图 → 触发 loadTasks（会用新 filter 渲染）
+  else { renderStatusTabs(); renderTaskList(state.tasks); }  // 已在任务页：直接刷新
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+
 // ---- 初始化 ----
 async function init(){
   buildPageSize();
@@ -637,13 +646,19 @@ function renderDashboard(tasks){
     return s;
   })();
   $('#stats').innerHTML=`
-    <div class="stat s1"><div class="ic">⏳</div><div class="n">${c.pending}</div><div class="l">等待中</div></div>
-    <div class="stat s2"><div class="ic">⬇</div><div class="n">${c.downloading}</div><div class="l">下载中</div></div>
-    <div class="stat s3"><div class="ic">✅</div><div class="n">${c.done}</div><div class="l">已完成</div></div>
-    <div class="stat s4"><div class="ic">⚠️</div><div class="n">${c.error}</div><div class="l">失败</div></div>
+    <div class="stat s1 clickable" data-filter="pending" role="button" tabindex="0" title="查看「等待中」的任务"><div class="ic">⏳</div><div class="n">${c.pending}</div><div class="l">等待中</div></div>
+    <div class="stat s2 clickable" data-filter="downloading" role="button" tabindex="0" title="查看「下载中」的任务"><div class="ic">⬇</div><div class="n">${c.downloading}</div><div class="l">下载中</div></div>
+    <div class="stat s3 clickable" data-filter="done" role="button" tabindex="0" title="查看「已完成」的任务"><div class="ic">✅</div><div class="n">${c.done}</div><div class="l">已完成</div></div>
+    <div class="stat s4 clickable" data-filter="error" role="button" tabindex="0" title="查看「失败」的任务"><div class="ic">⚠️</div><div class="n">${c.error}</div><div class="l">失败</div></div>
     <div class="stat s5"><div class="ic">📡</div><div class="n">${mon}</div><div class="l">监控中分类</div></div>
     <div class="stat s6" title="${esc(storeTitle)}">
       <div class="ic">💾</div><div class="n">${storeTxt}</div><div class="l">下载总量 · ${storeSub}</div></div>`;
+  // 四个统计卡可点击：跳到「下载任务」并自动切到对应状态筛选
+  $$('#stats .stat.clickable').forEach(el=>{
+    const go=()=>gotoTasks(el.dataset.filter);
+    el.onclick=go;
+    el.onkeydown=(e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); go(); } };
+  });
   // 实时动态
   const feed=tasks.slice(0,12);
   $('#feedCount').textContent = feed.length+' 条';
