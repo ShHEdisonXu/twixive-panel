@@ -460,6 +460,19 @@ function renderTaskList(tasks){
 // 已完成的任务不该显示报错（历史数据里可能残留重试过程中的中间状态文案）
 const showErr = t => !!(t.error && t.status!=='done');
 
+// 从任务直链里取出原站媒体 ID（video.twimg.com/amplify_video/<id>/...）
+function taskMediaId(t){
+  const m=((t&&t.url)||'').match(/amplify_video\/(\d+)\//);
+  return m ? m[1] : '';
+}
+// 该任务在原站的视频页面地址（目前仅 twixive 有独立详情页；twivideo 无可推导页面则返回空）
+function taskPageUrl(t){
+  const mid=taskMediaId(t);
+  const cat=(t&&t.category)||'';
+  // twixive 的分类以 "/" 开头（/new、/trend/videos、/ranking/24h…），twivideo 为 ranking_24h 之类
+  if(mid && cat.startsWith('/')) return 'https://twixive.net/video/'+mid;
+  return '';
+}
 function taskRow(t){
   const ic={pending:'⏳',downloading:'⬇',done:'✅',error:'⚠️',cancelled:'⛔',skipped:'⏭'}[t.status]||'•';
   const cls={done:'done',error:'err'}[t.status]||'';
@@ -470,6 +483,10 @@ function taskRow(t){
   const retry = (t.status==='error'||t.status==='cancelled') ? '<button data-act="retry">重试</button>' : '';
   const cancel = (t.status==='pending'||t.status==='downloading') ? '<button data-act="cancel">取消</button>' : '';
   const fdl = (t.status==='skipped') ? '<button data-act="fdownload" title="忽略大小上限，强制下载">下载</button>' : '';
+  // 原网页（仅能推导出页面时显示）+ 直链（在新窗口直接播放/下载原片）
+  const page = taskPageUrl(t);
+  const siteBtn = page ? `<button data-act="site" title="在原站打开该视频页面">${ICON.globe}</button>` : '';
+  const rawBtn = t.url ? `<button data-act="raw" title="在新窗口打开视频直链（直接看原片）">${ICON.open}</button>` : '';
   const mon = t.monitored ? '<span class="badge mon-b" title="来自监控中的分类">📡 监控</span>' : '';
   const tm = '<span class="mc ttime" title="触发下载时间">🕒 '+fmtTime(t.created_at)+'</span>';
   const delTitle = (state.purge && t.path) ? '删除任务，并删除源文件（移入回收站，可恢复）' : '只删除任务记录';
@@ -483,8 +500,8 @@ function taskRow(t){
       <div class="meta"><span class="badge ${t.status}">${STATUS_ZH[t.status]||t.status}</span> ${mon} <span class="mc">${esc(catLabel(t.category))} · ${fmtSize(t.size)}</span> ${tm} ${showErr(t)?('<span class="me">'+esc(t.error)+'</span>'):''}</div>
     </div>
     <div class="acts">
-      <button data-act="preview" title="预览">▶</button>
-      ${retry}${cancel}${fdl}
+      <button data-act="preview" title="预览（直接看）">▶</button>
+      ${siteBtn}${rawBtn}${retry}${cancel}${fdl}
       <button data-act="del" title="${delTitle}">${delTxt}</button>
     </div></div>`;
 }
@@ -497,6 +514,8 @@ function bindTaskActs(scope){
       if(act==='retry'){ await api('/tasks/'+id+'/retry',{method:'POST'}); loadTasks(); return; }
       if(act==='fdownload'){ await api('/tasks/'+id+'/force_download',{method:'POST'}); loadTasks(); return; }
       if(act==='preview'){ const t=state.tasks.find(x=>x.id===id); if(t) openPreview(t); return; }
+      if(act==='site'){ const t=state.tasks.find(x=>x.id===id); const u=t&&taskPageUrl(t); if(u) window.open(u,'_blank','noopener'); else toast('该任务没有可打开的原站页面'); return; }
+      if(act==='raw'){ const t=state.tasks.find(x=>x.id===id); if(t&&t.url) window.open(t.url,'_blank','noopener'); return; }
       if(act==='del'){
         const t=state.tasks.find(x=>x.id===id)||{};
         const hasFile=!!t.path;
@@ -684,6 +703,7 @@ const ICON = {
   sound:  svgIc('<path d="M11 5 6.5 9H3.5v6h3L11 19V5Z"/><path d="M15.2 9.2a4 4 0 0 1 0 5.6"/><path d="M17.9 6.6a7.6 7.6 0 0 1 0 10.8"/>'),
   mute:   svgIc('<path d="M11 5 6.5 9H3.5v6h3L11 19V5Z"/><path d="m15.5 9.5 5 5"/><path d="m20.5 9.5-5 5"/>'),
   open:   svgIc('<path d="M14 4h6v6"/><path d="M20 4l-8 8"/><path d="M18 14.5V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3.5"/>'),
+  globe:  svgIc('<circle cx="12" cy="12" r="9"/><path d="M3.2 12h17.6"/><path d="M12 3c2.7 2.6 2.7 15.4 0 18"/><path d="M12 3c-2.7 2.6-2.7 15.4 0 18"/>'),
   trash:  svgIc('<path d="M4 7h16"/><path d="M9.5 7V5.4A1.4 1.4 0 0 1 10.9 4h2.2a1.4 1.4 0 0 1 1.4 1.4V7"/><path d="M6.5 7l.9 12.1A2 2 0 0 0 9.4 21h5.2a2 2 0 0 0 2-1.9L17.5 7"/><path d="M10.5 11v6M13.5 11v6"/>'),
   sort:   svgIc('<path d="M7 20V4"/><path d="M3.5 16.5 7 20l3.5-3.5"/><path d="M17 4v16"/><path d="M13.5 7.5 17 4l3.5 3.5"/>'),
   play:   svgIc('<path d="M7 4.8v14.4L19 12 7 4.8Z" fill="currentColor" stroke-width="1.2"/>'),

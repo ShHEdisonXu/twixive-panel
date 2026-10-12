@@ -193,6 +193,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Micr
 .task .acts button{border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:9px;
   padding:6px 9px;cursor:pointer;font-size:12px;transition:.16s;display:inline-flex;align-items:center;justify-content:center;min-width:32px}
 .task .acts button:hover{color:#fff;border-color:var(--accent);background:rgba(124,92,255,.12)}
+.task .acts button svg{width:15px;height:15px;display:block}
 .badge{font-size:11px;padding:2px 8px;border-radius:20px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
 .badge.pending{color:var(--warn);border-color:rgba(251,191,36,.35)}
 .badge.downloading{color:var(--accent-2);border-color:rgba(34,211,238,.35)}
